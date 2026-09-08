@@ -24,20 +24,8 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Diagnose cgroup v2 delegation
+      - name: Run tests in a delegated cgroup
         run: |
-          U=$(id -u)
-          ROOT=/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service
-          echo "own cgroup: $(cat /proc/self/cgroup)"
-          echo "root exists: $(test -d "$ROOT" && echo yes || echo no)"
-          ls -ld "$ROOT" || true
-          echo "root controllers: $(cat "$ROOT/cgroup.controllers" 2>&1)"
-          echo "root subtree_control: $(cat "$ROOT/cgroup.subtree_control" 2>&1)"
-          mkdir -p "$ROOT/diag.slice"
-          ls -ld "$ROOT/diag.slice"
-          echo '+cpu +memory +pids' > "$ROOT/diag.slice/cgroup.subtree_control" 2>&1 || echo "enable failed: $?"
-          mkdir -p "$ROOT/diag.slice/run-test"
-          echo $$ > "$ROOT/diag.slice/run-test/cgroup.procs" 2>&1 || echo "self-migrate failed: $?"
-          cat /proc/self/cgroup
-
-      - run: npm test
+          sudo systemd-run --uid="$(id -u)" --gid="$(id -g)" --scope \
+            --property=Delegate=yes --same-dir \
+            -- npm test

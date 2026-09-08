@@ -113,8 +113,14 @@ counters, host-side file checks, the specific errno a blocked syscall returns
 
 - Linux with cgroup v2 and unprivileged user namespaces
 - `bubblewrap`, `gcc`, `libseccomp`
-- `cpu`, `memory` and `pids` delegated to the user slice (systemd does this by
-  default; check with `cat /sys/fs/cgroup/user.slice/user-$UID.slice/user@$UID.service/cgroup.controllers`)
+- `cpu`, `memory` and `pids` delegated somewhere in the caller's own cgroup
+  ancestry. A normal desktop or SSH login session gets this from systemd for
+  free. A plain systemd service unit usually does not — add
+  `Delegate=yes` to it, or run under `systemd-run --scope --property=Delegate=yes`
+  the way CI does. sandbin walks up from its own `/proc/self/cgroup` at
+  startup and roots itself at the nearest ancestor that exposes all three;
+  if none do, cgroup assignment fails loudly with the `setup_failed` verdict
+  instead of silently running unconfined.
 - Node 20+
 
 ## Status

@@ -1,12 +1,34 @@
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile, readFile, rm, mkdtemp } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ensureSeccompProgram } from './seccomp.mjs';
 
-const UID = process.getuid();
-const CG_ROOT = `/sys/fs/cgroup/user.slice/user-${UID}.slice/user@${UID}.service`;
+const NEEDED_CONTROLLERS = ['cpu', 'memory', 'pids'];
+const CGROUP_FS_ROOT = '/sys/fs/cgroup';
+
+function availableControllers(dir) {
+  try {
+    return new Set(readFileSync(path.join(dir, 'cgroup.controllers'), 'utf8').trim().split(/\s+/));
+  } catch {
+    return new Set();
+  }
+}
+
+function findDelegatedRoot() {
+  const ownPath = readFileSync('/proc/self/cgroup', 'utf8').trim().replace(/^0::/, '');
+  let dir = path.join(CGROUP_FS_ROOT, ownPath);
+  while (dir !== CGROUP_FS_ROOT && dir !== path.dirname(dir)) {
+    const available = availableControllers(dir);
+    if (NEEDED_CONTROLLERS.every((c) => available.has(c))) return dir;
+    dir = path.dirname(dir);
+  }
+  return path.join(CGROUP_FS_ROOT, ownPath);
+}
+
+const CG_ROOT = findDelegatedRoot();
 const CG_PARENT = path.join(CG_ROOT, 'sandbin.slice');
 
 export const DEFAULT_LIMITS = {
@@ -26,8 +48,10 @@ export const IMAGES = {
 };
 
 async function enableControllers(dir) {
+  const toEnable = NEEDED_CONTROLLERS.filter((c) => availableControllers(dir).has(c));
+  if (toEnable.length === 0) return;
   try {
-    await writeFile(path.join(dir, 'cgroup.subtree_control'), '+cpu +memory +pids');
+    await writeFile(path.join(dir, 'cgroup.subtree_control'), toEnable.map((c) => `+${c}`).join(' '));
   } catch (err) {
     if (err.code !== 'EBUSY' && err.code !== 'EINVAL' && err.code !== 'EACCES' && err.code !== 'ENOENT') {
       throw err;
@@ -47,7 +71,9 @@ async function createCgroup(id, limits) {
   await writeFile(path.join(dir, 'memory.max'), String(limits.memoryBytes));
   await writeFile(path.join(dir, 'memory.swap.max'), '0');
   await writeFile(path.join(dir, 'pids.max'), String(limits.pids));
-  await writeFile(path.join(dir, 'cpu.max'), `${limits.cpuPercent * 1000} 100000`);
+  if (availableControllers(dir).has('cpu')) {
+    await writeFile(path.join(dir, 'cpu.max'), `${limits.cpuPercent * 1000} 100000`);
+  }
   return dir;
 }
 

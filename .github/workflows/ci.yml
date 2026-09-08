@@ -24,8 +24,5 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Debug one run with verbose cgroup logging
-        run: sudo env "PATH=$PATH" SANDBIN_DEBUG=1 node src/debug-once.mjs
-
       - name: Run tests
         run: sudo env "PATH=$PATH" npm test

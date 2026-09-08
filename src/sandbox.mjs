@@ -36,16 +36,16 @@ function alreadyEnabled(dir) {
   }
 }
 
+function canHostDelegation(dir) {
+  const hasAllControllers = NEEDED_CONTROLLERS.every((c) => availableControllers(dir).has(c));
+  return hasAllControllers && (alreadyEnabled(dir) || isProcessFree(dir));
+}
+
 function findDelegatedRoot() {
   const ownPath = readFileSync('/proc/self/cgroup', 'utf8').trim().replace(/^0::/, '');
   let dir = path.join(CGROUP_FS_ROOT, ownPath);
   while (dir !== CGROUP_FS_ROOT && dir !== path.dirname(dir)) {
-    const hasAllControllers = NEEDED_CONTROLLERS.every((c) => availableControllers(dir).has(c));
-    // Enabling subtree_control on a cgroup that still holds resident
-    // processes fails with EBUSY (the "no internal process" constraint), so
-    // only a process-free ancestor - or one where delegation is already
-    // active - can actually host sandbin's tree.
-    if (hasAllControllers && (alreadyEnabled(dir) || isProcessFree(dir))) return dir;
+    if (canHostDelegation(dir)) return dir;
     dir = path.dirname(dir);
   }
   return path.join(CGROUP_FS_ROOT, ownPath);

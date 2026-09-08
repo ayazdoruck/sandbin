@@ -1,5 +1,7 @@
 # sandbin
 
+[![CI](https://github.com/ayazdoruck/sandbin/actions/workflows/ci.yml/badge.svg)](https://github.com/ayazdoruck/sandbin/actions/workflows/ci.yml)
+
 Runs untrusted code and survives it. No Docker, no root, no VM.
 
 A submission gets its own PID namespace, its own network stack (empty), its own
@@ -114,12 +116,14 @@ counters, host-side file checks, the specific errno a blocked syscall returns
 - Linux with cgroup v2 and unprivileged user namespaces
 - `bubblewrap`, `gcc`, `libseccomp`
 - `cpu`, `memory` and `pids` delegated somewhere in the caller's own cgroup
-  ancestry. A normal desktop or SSH login session gets this from systemd for
-  free. A plain systemd service unit usually does not — add
-  `Delegate=yes` to it, or run under `systemd-run --scope --property=Delegate=yes`
-  the way CI does. sandbin walks up from its own `/proc/self/cgroup` at
-  startup and roots itself at the nearest ancestor that exposes all three;
-  if none do, cgroup assignment fails loudly with the `setup_failed` verdict
+  ancestry, at a level holding no processes of its own. A normal desktop or
+  SSH login session gets this from systemd for free — sandbin walks up from
+  its own `/proc/self/cgroup` at startup and roots itself at the nearest
+  ancestor that qualifies. A raw CI job or a plain systemd service without
+  `Delegate=yes` usually has no such ancestor anywhere in its tree; running
+  as root sidesteps that (root owns the whole cgroup filesystem), which is
+  what this project's own CI does. Either way, if delegation genuinely isn't
+  available, cgroup assignment fails loudly with the `setup_failed` verdict
   instead of silently running unconfined.
 - Node 20+
 

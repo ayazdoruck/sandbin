@@ -1,11 +1,21 @@
 import http from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { createQueue } from './queue.mjs';
 import { IMAGES } from './sandbox.mjs';
 
 const CLEANUP_DELAY_MS = 30_000;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+
+const STATIC_ROUTES = {
+  '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
+  '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
+};
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -131,6 +141,20 @@ export function createServer({ queueLimits = {} } = {}) {
   }
 
   const httpServer = http.createServer((req, res) => {
+    if (req.method === 'GET' && STATIC_ROUTES[req.url]) {
+      const route = STATIC_ROUTES[req.url];
+      readFile(path.join(PUBLIC_DIR, route.file))
+        .then((data) => {
+          res.writeHead(200, { 'content-type': route.type });
+          res.end(data);
+        })
+        .catch(() => {
+          res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ message: 'failed to read static asset' }));
+        });
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/runs') {
       const key = req.headers['x-sandbin-key'] || req.socket.remoteAddress;
       readJsonBody(req)

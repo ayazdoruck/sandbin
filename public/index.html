@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sandbin</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header>
+  <h1>sandbin</h1>
+  <p>Runs untrusted code and survives it.</p>
+</header>
+
+<main>
+  <div class="controls">
+    <label>
+      language
+      <select id="language">
+        <option value="python">python</option>
+        <option value="bash">bash</option>
+      </select>
+    </label>
+    <button id="run">run<span class="hint">⌘⏎</span></button>
+  </div>
+
+  <textarea id="code" class="editor" spellcheck="false" rows="10">print("hello from sandbin")</textarea>
+
+  <div id="output" class="output"></div>
+
+  <div class="stdin-row">
+    <input id="stdin" type="text" placeholder="stdin" disabled>
+    <button id="send-stdin" disabled>send</button>
+    <button id="close-stdin" disabled>close</button>
+  </div>
+
+  <div id="stats" class="stats"></div>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -82,14 +82,36 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
 - image build step separate from the request path, so adding a language never
   touches the hot path
 
-## Phase 5 — frontend
+## Phase 5 — frontend (done)
 
-- single-page editor: language picker, code area, stdin box, run button
-- live output panel fed by the Phase 3 WebSocket
-- resource panel: wall time, CPU time, peak memory, verdict — the numbers
-  `sandbox.mjs` already computes, just rendered
-- deployed as a static build talking to the API; no server-rendered pages
-  needed for this surface
+- single-page editor: language picker, code area, stdin box, run button —
+  plain HTML/CSS/JS, no framework, no build step, no font or color beyond
+  black, white and one gray for secondary text
+- live output panel fed by the Phase 3 WebSocket; interactive stdin works
+  through the same UI, verified against a real blocking `input()` call
+- resource panel: verdict, duration, CPU time, peak memory, exit code — the
+  numbers `sandbox.mjs` already computes, just rendered
+- served as static files straight off `server.mjs` (`GET /`, `/styles.css`,
+  `/app.js`) rather than deployed separately — there's one process to run,
+  and nothing here needs a build step or a second server
+- found two real bugs by actually clicking through it in a browser rather
+  than trusting the API tests alone:
+  - a run finishing before the WebSocket handshake completes (routine, given
+    ~20ms cold starts) replays only a single `finished` message with no
+    `chunk` events; the frontend rendered stats but never the buffered
+    `stdout`/`stderr` from that message, so fast programs showed empty
+    output. Fixed by falling back to the buffered result when no chunk was
+    ever seen live.
+  - the default 5s wall-clock limit is sized for automated submissions, not
+    a human reading a prompt and typing a reply — a real interactive session
+    routinely exceeds it. The frontend now requests `wallClockMs: 30000` for
+    its own submissions; every other ceiling (memory, CPU, pids) is
+    unaffected.
+- no headless-browser test suite for this layer: the API it depends on
+  (Phase 3) is already covered end to end, and Playwright/Puppeteer would be
+  a heavy dependency for a three-file static page. Verified manually instead
+  — basic run, incremental output, interactive stdin via both Enter and the
+  send button, stderr styling. A gap worth naming, not hiding.
 
 ## Phase 6 — CI and publish
 

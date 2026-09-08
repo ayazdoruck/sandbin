@@ -151,6 +151,14 @@ final `finished` message and closes. Sending `{ "type": "stdin", "text":
 this is what makes a real `input()` call work, not just a fixed string
 supplied up front. `{ "type": "stdin_close" }` sends EOF.
 
+### Frontend
+
+`npm start` serves it at `/` — plain HTML, CSS and JS, no framework, no
+build step, black and white only. Pick a language, write code, run, watch
+it stream. The stdin box stays live for the duration of the run, so a
+program that calls `input()` actually works, not just one given its input
+up front.
+
 ## Tests
 
 ```bash
@@ -230,9 +238,9 @@ ephemeral port — no mocks — and drives it end to end:
 ## Status
 
 Early. The isolation core — namespaces, cgroups, seccomp, rlimits — a
-bounded, backpressured job queue, and a streaming HTTP + WebSocket API all
-work and are tested. Still to come: per-language root filesystems and a
-browser frontend. See [ROADMAP.md](ROADMAP.md).
+bounded, backpressured job queue, a streaming HTTP + WebSocket API, and a
+minimal browser frontend all work. `npm start` and open it. Still to come:
+per-language root filesystems. See [ROADMAP.md](ROADMAP.md).
 
 ### Known issues
 

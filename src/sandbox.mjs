@@ -25,13 +25,20 @@ export const IMAGES = {
   bash: { file: 'main.sh', argv: ['/usr/bin/bash', '--noprofile', '--norc', '/box/main.sh'] },
 };
 
+async function enableControllers(dir) {
+  try {
+    await writeFile(path.join(dir, 'cgroup.subtree_control'), '+cpu +memory +pids');
+  } catch (err) {
+    if (err.code !== 'EBUSY' && err.code !== 'EINVAL' && err.code !== 'EACCES' && err.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+}
+
 async function ensureParentSlice() {
   await mkdir(CG_PARENT, { recursive: true });
-  try {
-    await writeFile(path.join(CG_PARENT, 'cgroup.subtree_control'), '+cpu +memory +pids');
-  } catch (err) {
-    if (err.code !== 'EBUSY' && err.code !== 'EINVAL') throw err;
-  }
+  await enableControllers(CG_ROOT);
+  await enableControllers(CG_PARENT);
 }
 
 async function createCgroup(id, limits) {
@@ -98,9 +105,10 @@ export async function run({ language = 'python', code = '', stdin = '', limits =
 
   const seccompFd = 9;
   const bwrapArgs = buildBwrapArgs({ ...spec, hostDir }, lim, seccompFd);
+  const CGROUP_ASSIGN_FAILED = 91;
 
   const script =
-    `echo $$ > ${cgroup}/cgroup.procs; ` +
+    `echo $$ > '${cgroup}/cgroup.procs' || exit ${CGROUP_ASSIGN_FAILED}; ` +
     `ulimit -f ${Math.floor(lim.fileSizeBytes / 1024)}; ` +
     `ulimit -n ${lim.openFiles}; ` +
     `ulimit -c 0; ` +
@@ -132,15 +140,36 @@ export async function run({ language = 'python', code = '', stdin = '', limits =
   child.stdin.end(stdin);
 
   const startedAt = Date.now();
-  const timer = setTimeout(() => {
-    verdict ??= 'timeout';
-    killCgroup(cgroup);
-  }, lim.wallClockMs);
+  const hardStopGraceMs = 2_000;
 
   const exit = await new Promise((resolve) => {
-    child.on('close', (code, signal) => resolve({ code, signal }));
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    child.on('close', (code, signal) => settle({ code, signal }));
+
+    const softTimer = setTimeout(() => {
+      verdict ??= 'timeout';
+      killCgroup(cgroup);
+    }, lim.wallClockMs);
+
+    const hardTimer = setTimeout(() => {
+      verdict ??= 'killed';
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.kill('SIGKILL');
+      settle({ code: null, signal: 'SIGKILL' });
+    }, lim.wallClockMs + hardStopGraceMs);
+
+    child.on('close', () => {
+      clearTimeout(softTimer);
+      clearTimeout(hardTimer);
+    });
   });
-  clearTimeout(timer);
 
   const durationMs = Date.now() - startedAt;
   const events = await readStat(cgroup, 'memory.events');
@@ -149,6 +178,7 @@ export async function run({ language = 'python', code = '', stdin = '', limits =
   const cpuUsec = Number(/usage_usec (\d+)/.exec(await readStat(cgroup, 'cpu.stat'))?.[1] ?? 0);
   const pidsMaxHits = Number(/max (\d+)/.exec(await readStat(cgroup, 'pids.events'))?.[1] ?? 0);
 
+  if (!verdict && exit.code === CGROUP_ASSIGN_FAILED) verdict = 'setup_failed';
   if (!verdict && oomKills > 0) verdict = 'memory_limit';
   if (!verdict && exit.signal) verdict = 'killed';
   if (!verdict) verdict = exit.code === 0 ? 'ok' : 'error';

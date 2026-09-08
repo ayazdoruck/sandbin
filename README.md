@@ -68,8 +68,14 @@ console.log(result.verdict, result.stdout);
 ```
 
 `verdict` is one of `ok`, `error`, `timeout`, `memory_limit`, `output_limit`,
-`killed`. The result also carries `cpuMs`, `peakBytes`, `oomKills` and
-`pidsMaxHits`, read straight from the cgroup.
+`killed`, `setup_failed`. The result also carries `cpuMs`, `peakBytes`,
+`oomKills` and `pidsMaxHits`, read straight from the cgroup.
+
+`run()` always settles within `wallClockMs + 2s`, no matter what the guest or
+its descendants do. The deadline itself is `cgroup.kill`; the extra two
+seconds are a hard backstop that force-closes the process and its pipes if
+something downstream is still holding them open, so a misbehaving submission
+can never wedge the supervisor itself.
 
 The seccomp policy is compiled from `seccomp/policy.c` on first use and cached
 as `seccomp/policy.bpf`; neither file is checked in, both are regenerated
@@ -120,10 +126,6 @@ frontend. See [ROADMAP.md](ROADMAP.md).
 
 ### Known issues
 
-- Under heavy fork pressure the wall-clock deadline is enforced on time but
-  teardown can lag by a second or two, because the supervisor waits for stdio
-  pipes held open by the guest's children. The cgroup ceilings still hold
-  throughout; only the reported duration overshoots.
 - Threat model: this hardens the sandbox against careless or mildly malicious
   code, not against an attacker who already has a kernel exploit. Guest and
   host share one kernel; seccomp shrinks the reachable syscall surface, it

@@ -93,6 +93,42 @@ const CASES = [
   { name: 'io_uring blocked', language: 'python',
     code: 'import ctypes\nlibc = ctypes.CDLL(None, use_errno=True)\nr = libc.syscall(425, 8, 0)\nprint("io_uring_setup", r, ctypes.get_errno())',
     check: (r) => r.stdout.includes('io_uring_setup -1') },
+
+  { name: 'node: ordinary program', language: 'node',
+    code: 'console.log("hello from node"); console.log(2 ** 10)',
+    check: (r) => r.verdict === 'ok' && r.stdout.includes('hello from node') && r.stdout.includes('1024') },
+
+  { name: 'node: stdin via readline', language: 'node', stdin: 'ayaz\n',
+    code: 'const rl = require("readline").createInterface({ input: process.stdin });\nrl.on("line", (l) => { console.log("hello " + l); rl.close(); })',
+    check: (r) => r.verdict === 'ok' && r.stdout.includes('hello ayaz') },
+
+  { name: 'node: network blocked at the syscall level', language: 'node',
+    code: 'require("net").connect(80, "1.1.1.1")',
+    check: (r) => r.verdict === 'error' && r.stderr.includes('EPERM') },
+
+  { name: 'node: sustained memory bomb caught', language: 'node',
+    code: 'const buf = Buffer.alloc(200 * 1024 * 1024, 1);\nconst start = Date.now();\nwhile (Date.now() - start < 2000) { buf[0] = 1; }',
+    check: (r) => r.verdict === 'memory_limit' && r.oomKills > 0 },
+
+  { name: 'c: compiles and runs', language: 'c',
+    code: '#include <stdio.h>\nint main(){ printf("hello from c\\n"); return 0; }',
+    check: (r) => r.verdict === 'ok' && r.stdout.includes('hello from c') },
+
+  { name: 'c: syntax error reported as compile_error', language: 'c',
+    code: '#include <stdio.h>\nint main() { this is not c',
+    check: (r) => r.verdict === 'compile_error' && r.stderr.length > 0 },
+
+  { name: 'c: nonzero exit code surfaces as error', language: 'c',
+    code: '#include <stdio.h>\nint main(){ printf("ran\\n"); return 7; }',
+    check: (r) => r.verdict === 'error' && r.exitCode === 7 && r.stdout.includes('ran') },
+
+  { name: 'c: sustained memory bomb caught', language: 'c',
+    code: '#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\nint main(){ size_t n = 200*1024*1024; char *p = malloc(n); memset(p,1,n); sleep(3); printf("sum=%d\\n", p[0]+p[n-1]); return 0; }',
+    check: (r) => r.verdict === 'memory_limit' && r.oomKills > 0 },
+
+  { name: 'c: network blocked at the syscall level', language: 'c',
+    code: '#include <sys/socket.h>\n#include <netinet/in.h>\n#include <arpa/inet.h>\n#include <stdio.h>\nint main(){ int fd = socket(AF_INET, SOCK_STREAM, 0); struct sockaddr_in a = {0}; a.sin_family = AF_INET; a.sin_port = htons(80); inet_pton(AF_INET, "1.1.1.1", &a.sin_addr); int r = connect(fd, (struct sockaddr*)&a, sizeof(a)); printf("connect=%d\\n", r); return 0; }',
+    check: (r) => !r.stdout.includes('connect=0') },
 ];
 
 let passed = 0;

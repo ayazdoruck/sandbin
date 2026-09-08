@@ -7,7 +7,20 @@ const stdinInput = document.getElementById('stdin');
 const sendStdinButton = document.getElementById('send-stdin');
 const closeStdinButton = document.getElementById('close-stdin');
 
+const SAMPLES = {
+  python: 'print("hello from sandbin")',
+  bash: 'echo "hello from sandbin"',
+  node: 'console.log("hello from sandbin")',
+  c: '#include <stdio.h>\nint main(){ printf("hello from sandbin\\n"); return 0; }',
+};
+
 let socket = null;
+
+languageSelect.addEventListener('change', () => {
+  if (Object.values(SAMPLES).includes(codeInput.value)) {
+    codeInput.value = SAMPLES[languageSelect.value];
+  }
+});
 
 function appendChunk(text, stream) {
   if (stream === 'stderr') {

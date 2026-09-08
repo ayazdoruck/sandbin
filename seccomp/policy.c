@@ -84,7 +84,7 @@ static const char *const filesystem[] = {
     "readlink", "readlinkat", "getdents", "getdents64", "unlink", "unlinkat",
     "rename", "renameat", "renameat2", "mkdir", "mkdirat", "rmdir", "chmod",
     "fchmod", "fchmodat", "truncate", "ftruncate", "flock", "fsync",
-    "fdatasync", "utimensat", "futimesat", "statfs", "fstatfs",
+    "fdatasync", "utimensat", "futimesat", "statfs", "fstatfs", "umask",
 };
 
 static const char *const signals[] = {
@@ -112,6 +112,10 @@ static const char *const identity[] = {
 static const char *const misc_info[] = {
     "uname", "sysinfo", "getrandom", "arch_prctl", "prctl", "capget",
     "getrlimit", "prlimit64",
+};
+
+static const char *const fd_type_probe[] = {
+    "getsockopt", "getsockname",
 };
 
 static const char *const futex_group[] = {
@@ -143,6 +147,7 @@ int main(void) {
     allow_many(scheduling, sizeof(scheduling) / sizeof(*scheduling));
     allow_many(identity, sizeof(identity) / sizeof(*identity));
     allow_many(misc_info, sizeof(misc_info) / sizeof(*misc_info));
+    allow_many(fd_type_probe, sizeof(fd_type_probe) / sizeof(*fd_type_probe));
     allow_many(futex_group, sizeof(futex_group) / sizeof(*futex_group));
     allow_many(polling, sizeof(polling) / sizeof(*polling));
 

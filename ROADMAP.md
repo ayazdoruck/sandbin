@@ -72,15 +72,53 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   port, no mocks: incremental delivery, interactive stdin, backpressure over
   HTTP (429), bad input (400), reconnect-after-finish replay, unknown run id
 
-## Phase 4 — per-language runtime images
+## Phase 4 — per-language runtime images (done)
 
-- Python and Bash exist today; add Node.js, and one compiled language (C or
-  Go) to prove the design isn't interpreter-only
-- each language gets its own minimal read-only rootfs directory and its own
-  syscall allowlist where the two differ meaningfully (a compiled language
-  needs no scripting-language startup syscalls, for instance)
-- image build step separate from the request path, so adding a language never
-  touches the hot path
+- Node.js added as a second interpreter, C as a compiled language — proves
+  the design isn't interpreter-only
+- Node's binary lives wherever the host happens to keep it (`mise`, `nvm`,
+  a CI tool-cache directory, `/usr/bin` — no fixed location), so its path is
+  resolved once at startup via `realpathSync(process.execPath)` — the exact
+  binary already running sandbin itself — rather than assumed. Its install
+  directory is read-only bind-mounted in alongside `/usr`
+- C runs in two sandboxed phases, not one: `gcc` compiles under its own,
+  more permissive resource profile (256 MB / 10 s, since compiling
+  legitimately needs more of both than running a script does), and only on
+  success does a second, separate sandboxed invocation execute the result
+  under the caller's normal limits. A compile failure short-circuits before
+  ever reaching the second phase and reports `compile_error` with the
+  compiler's own diagnostic as `stderr`
+- the compile phase's `/box` is mounted read-write (`--bind`, not
+  `--ro-bind`) so `gcc` can write `a.out` — the only image that needs this;
+  every execute-phase mount, and every other language, stays read-only
+- three real bugs surfaced by actually running each new language, none of
+  them visible from reading the code:
+  - `gcc`/`ld` inside the sandbox produced `a.out` at mode `644`, not the
+    normal `755` — executing it then failed with a plain permission error.
+    The cause was `umask` itself being seccomp-denied (missing from the
+    allowlist entirely, an oversight from the original policy, not a
+    deliberate exclusion); denying a benign query syscall broke a subprocess
+    three layers removed from the syscall that actually failed
+  - Node produced clean exit code 0 with completely empty `stdout` — libuv
+    probes any given stdio fd with `getsockopt`/`getsockname` to tell a pipe
+    from a socket from a TTY, regardless of what the fd actually is, and
+    with both seccomp-denied it apparently misdetected the stream type
+    and silently dropped writes rather than erroring visibly. Both were
+    intentionally absent as part of "deny the whole socket family" — adding
+    them back is safe: they only read metadata about an fd the guest already
+    holds, `socket()` itself (creating a new one) stays fully denied, and
+    the "network blocked" adversarial case still passes
+  - a sustained C memory bomb (write, then `sleep(3)`) is caught correctly
+    (`memory_limit`, `oomKills: 1`), but the identical allocation without the
+    sleep sometimes exits cleanly with a tiny reported peak. This isn't a
+    sandbin bug: cgroup v2's `memory.max` attempts reclaim before escalating
+    to an OOM kill, and a spike brief enough to finish and free itself before
+    that escalation completes can legitimately slip through. True for any
+    language, not just C — Python's earlier memory-bomb test only ever
+    looked reliable because touching 512 MB in a loop takes measurably
+    longer than one `memset`
+- 32/32 adversarial cases, including per-language network and sustained
+  memory checks for both new languages
 
 ## Phase 5 — frontend (done)
 
@@ -113,9 +151,21 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   — basic run, incremental output, interactive stdin via both Enter and the
   send button, stderr styling. A gap worth naming, not hiding.
 
-## Phase 6 — CI and publish
+## Phase 6 — CI and publish (done)
 
-- GitHub Actions: run the adversarial suite on every push, fail the build on
-  any uncontained case
-- README finalized with the real numbers from CI, not hand-typed ones
-- repository pushed to GitHub under a single author
+- GitHub Actions runs all three suites (sandbox, queue, server) on every
+  push and pull request, with a 5-minute job timeout so a genuine hang fails
+  fast instead of consuming CI budget silently
+- `bubblewrap`, `libseccomp-dev` and `gcc` installed explicitly in CI rather
+  than assumed present on the runner image
+- the runner needed two real fixes that were entirely about the environment,
+  not sandbin's own code: Ubuntu 24.04's default-on AppArmor restriction on
+  unprivileged user namespaces, and a cgroup hierarchy where the job's own
+  cgroup lives under `system.slice` with resident processes rather than a
+  process-free `user.slice` session — the second one is why `findDelegatedRoot`
+  walks up looking for a process-free ancestor instead of assuming one
+  fixed path. Documented in README's Requirements rather than special-cased
+  quietly
+- repository pushed to GitHub under a single author, `ayazdoruck`; every
+  commit message states what broke and how it was actually found, not just
+  what changed

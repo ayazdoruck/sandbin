@@ -26,7 +26,7 @@ Four independent layers, so no single bug is an escape:
 | Layer | Enforces |
 | --- | --- |
 | **Namespaces** (bubblewrap) | No network, no host filesystem, no host processes, private tmpfs root |
-| **Seccomp** | Syscall allowlist — everything not explicitly needed by Python/Bash is denied |
+| **Seccomp** | Syscall allowlist — everything not explicitly needed by the guest runtime is denied |
 | **cgroup v2** | `memory.max`, `cpu.max`, `pids.max`, and `cgroup.kill` for instant teardown |
 | **rlimits** | File size, open descriptors, no core dumps |
 
@@ -39,8 +39,9 @@ Three details matter more than they look:
   ceiling ever being touched.
 - **`cgroup.kill` kills the whole tree in one write.** No PID chasing, no
   processes surviving the reaper.
-- **The seccomp filter is a strict allowlist, not a blocklist.** Roughly 90
-  syscalls are permitted; everything else — `ptrace`, `mount`, `unshare`,
+- **The seccomp filter is a strict allowlist, not a blocklist.** 142
+  syscalls are permitted — enough for Python, Bash, Node and a compiled C
+  binary, nothing more; everything else — `ptrace`, `mount`, `unshare`,
   `io_uring_setup`, raw sockets, nested user namespaces via `clone` — returns
   `EPERM` by default. `clone` itself stays allowed for ordinary fork/thread
   use; only the call is checked for the specific flags
@@ -48,10 +49,14 @@ Three details matter more than they look:
   `CLONE_NEWIPC`/`CLONE_NEWCGROUP`) that would let an already-unprivileged
   guest create a fresh, "privileged-inside" namespace of its own. `clone3` is
   denied with `ENOSYS` specifically rather than `EPERM`, so glibc's built-in
-  fallback to `clone()` runs the program normally instead of aborting it. The
-  filter covers the native x86_64 syscall table plus the 32-bit and x32 compat
-  ABIs, closing the classic bypass of reaching the kernel through a syscall
-  table the filter forgot about.
+  fallback to `clone()` runs the program normally instead of aborting it.
+  `getsockopt`/`getsockname` are allowed too — runtimes like Node's libuv
+  probe any stdio fd with them to tell a pipe from a socket, regardless of
+  what it actually is — but only as metadata reads on an fd the guest already
+  holds; `socket()` itself, which would actually create one, stays denied.
+  The filter covers the native x86_64 syscall table plus the 32-bit and x32
+  compat ABIs, closing the classic bypass of reaching the kernel through a
+  syscall table the filter forgot about.
 
 ## Usage
 
@@ -69,9 +74,16 @@ console.log(result.verdict, result.stdout);
 // -> ok  '4950\n'
 ```
 
+`language` is `python`, `bash`, `node` or `c`. The first three run directly;
+`c` compiles with `gcc` under its own more permissive limits first (256 MB,
+10 s — compiling legitimately needs more of both than running a script does)
+and only executes the result if that succeeds. A compile failure returns
+verdict `compile_error` with the compiler's diagnostic as `stderr`, without
+ever reaching the execute phase.
+
 `verdict` is one of `ok`, `error`, `timeout`, `memory_limit`, `output_limit`,
-`killed`, `setup_failed`. The result also carries `cpuMs`, `peakBytes`,
-`oomKills` and `pidsMaxHits`, read straight from the cgroup.
+`killed`, `setup_failed`, `compile_error`. The result also carries `cpuMs`,
+`peakBytes`, `oomKills` and `pidsMaxHits`, read straight from the cgroup.
 
 `run()` always settles within `wallClockMs + 2s`, no matter what the guest or
 its descendants do. The deadline itself is `cgroup.kill`; the extra two
@@ -171,20 +183,28 @@ counters, host-side file checks, the specific errno a blocked syscall returns
 — rather than the guest's own exit status, which a guest could lie about.
 
 ```
-✅ ordinary program                       ✅ writes stay inside
-✅ reads stdin                            ✅ host pids hidden
-✅ subprocess chain                       ✅ output flood
-✅ threading                              ✅ tmpfs bounded
-✅ infinite loop                          ✅ nested user namespace blocked
-✅ cpu throttled                          ✅ raw clone with new-user flag blocked
-✅ memory bomb                            ✅ raw clone without dangerous flags still works
-✅ fork bomb                              ✅ clone3 falls back instead of aborting
-✅ sustained fork bomb                    ✅ ptrace blocked
-✅ fork loop                              ✅ mount blocked
-✅ network blocked                        ✅ io_uring blocked
-✅ host fs invisible
+✅ ordinary program                       ✅ ptrace blocked
+✅ reads stdin                            ✅ mount blocked
+✅ subprocess chain                       ✅ io_uring blocked
+✅ threading                              ✅ node: ordinary program
+✅ infinite loop                          ✅ node: stdin via readline
+✅ cpu throttled                          ✅ node: network blocked at the syscall level
+✅ memory bomb                            ✅ node: sustained memory bomb caught
+✅ fork bomb                              ✅ c: compiles and runs
+✅ sustained fork bomb                    ✅ c: syntax error reported as compile_error
+✅ fork loop                              ✅ c: nonzero exit code surfaces as error
+✅ network blocked                        ✅ c: sustained memory bomb caught
+✅ host fs invisible                      ✅ c: network blocked at the syscall level
+✅ writes stay inside
+✅ host pids hidden
+✅ output flood
+✅ tmpfs bounded
+✅ nested user namespace blocked
+✅ raw clone with new-user flag blocked
+✅ raw clone without dangerous flags still works
+✅ clone3 falls back instead of aborting
 
-23/23 contained
+32/32 contained
 ```
 
 `npm run test:queue` covers the queue separately, against real spawned
@@ -221,7 +241,9 @@ ephemeral port — no mocks — and drives it end to end:
 ## Requirements
 
 - Linux with cgroup v2 and unprivileged user namespaces
-- `bubblewrap`, `gcc`, `libseccomp`
+- `bubblewrap`, `gcc`, `libseccomp` — `gcc` doubles as the C language's own
+  compiler and is required regardless of whether you ever run C, since it
+  also builds the seccomp policy from `seccomp/policy.c` on first use
 - `cpu`, `memory` and `pids` delegated somewhere in the caller's own cgroup
   ancestry, at a level holding no processes of its own. A normal desktop or
   SSH login session gets this from systemd for free — sandbin walks up from
@@ -237,10 +259,12 @@ ephemeral port — no mocks — and drives it end to end:
 
 ## Status
 
-Early. The isolation core — namespaces, cgroups, seccomp, rlimits — a
-bounded, backpressured job queue, a streaming HTTP + WebSocket API, and a
-minimal browser frontend all work. `npm start` and open it. Still to come:
-per-language root filesystems. See [ROADMAP.md](ROADMAP.md).
+All six roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
+a bounded and backpressured job queue, a streaming HTTP + WebSocket API,
+Python/Bash/Node/C support, a minimal browser frontend, and CI running all
+three test suites on every push. `npm start` and open it. See
+[ROADMAP.md](ROADMAP.md) for what was actually found building each phase —
+several real bugs, not just a feature checklist.
 
 ### Known issues
 
@@ -248,3 +272,10 @@ per-language root filesystems. See [ROADMAP.md](ROADMAP.md).
   code, not against an attacker who already has a kernel exploit. Guest and
   host share one kernel; seccomp shrinks the reachable syscall surface, it
   does not add a second kernel between them the way a VM-based sandbox would.
+- A memory spike brief enough to allocate, get used, and exit before cgroup
+  v2 escalates from reclaim to an OOM kill can slip through `memory.max`
+  without being caught. This is a property of the kernel's reclaim-before-kill
+  behavior, not something sandbin controls, and applies equally to any
+  language — see the C findings in [ROADMAP.md](ROADMAP.md#phase-4--per-language-runtime-images-done)
+  for how this was found. A *sustained* excess is always caught; the gap is
+  specifically for spikes fast enough to free themselves first.

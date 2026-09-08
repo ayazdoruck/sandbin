@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile, readFile, rm, mkdtemp } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ensureSeccompProgram } from './seccomp.mjs';
+
+const NODE_BIN = realpathSync(process.execPath);
+const NODE_ROOT = path.dirname(path.dirname(NODE_BIN));
 
 const NEEDED_CONTROLLERS = ['cpu', 'memory', 'pids'];
 const CGROUP_FS_ROOT = '/sys/fs/cgroup';
@@ -65,9 +68,26 @@ export const DEFAULT_LIMITS = {
   tmpfsBytes: 16 * 1024 * 1024,
 };
 
+const COMPILE_LIMITS = {
+  memoryBytes: 256 * 1024 * 1024,
+  cpuPercent: 100,
+  pids: 16,
+  wallClockMs: 10_000,
+  outputBytes: 64 * 1024,
+  fileSizeBytes: 8 * 1024 * 1024,
+  openFiles: 64,
+  tmpfsBytes: 32 * 1024 * 1024,
+};
+
 export const IMAGES = {
   python: { file: 'main.py', argv: ['/usr/bin/python3', '-I', '-B', '-u', '/box/main.py'] },
   bash: { file: 'main.sh', argv: ['/usr/bin/bash', '--noprofile', '--norc', '/box/main.sh'] },
+  node: { file: 'main.js', argv: [NODE_BIN, '/box/main.js'], extraBinds: [NODE_ROOT] },
+  c: {
+    file: 'main.c',
+    compile: ['/usr/bin/gcc', '-O2', '-o', '/box/a.out', '/box/main.c'],
+    argv: ['/box/a.out'],
+  },
 };
 
 const DEBUG = !!process.env.SANDBIN_DEBUG;
@@ -125,7 +145,9 @@ async function readStat(dir, file, fallback = '') {
   }
 }
 
-function buildBwrapArgs(image, lim, seccompFd) {
+function buildBwrapArgs({ hostDir, argv, extraBinds, boxWritable }, lim, seccompFd) {
+  const extraBindArgs = (extraBinds ?? []).flatMap((p) => ['--ro-bind', p, p]);
+  const boxBindFlag = boxWritable ? '--bind' : '--ro-bind';
   return [
     '--unshare-all',
     '--die-with-parent',
@@ -136,6 +158,7 @@ function buildBwrapArgs(image, lim, seccompFd) {
     '--setenv', 'LANG', 'C.UTF-8',
     '--ro-bind', '/usr', '/usr',
     '--ro-bind', '/etc/ld.so.cache', '/etc/ld.so.cache',
+    ...extraBindArgs,
     '--symlink', 'usr/lib', '/lib',
     '--symlink', 'usr/lib64', '/lib64',
     '--symlink', 'usr/bin', '/bin',
@@ -143,29 +166,23 @@ function buildBwrapArgs(image, lim, seccompFd) {
     '--proc', '/proc',
     '--dev', '/dev',
     '--size', String(lim.tmpfsBytes), '--tmpfs', '/tmp',
-    '--ro-bind', image.hostDir, '/box',
+    boxBindFlag, hostDir, '/box',
     '--chdir', '/box',
     '--seccomp', String(seccompFd),
     '--',
-    ...image.argv,
+    ...argv,
   ];
 }
 
-export async function run({ language = 'python', code = '', stdin = '', limits = {}, onChunk, onSpawn } = {}) {
-  const spec = IMAGES[language];
-  if (!spec) throw new Error(`unknown language: ${language}`);
-  const lim = { ...DEFAULT_LIMITS, ...limits };
-  const id = randomUUID().slice(0, 8);
+const CGROUP_ASSIGN_FAILED = 91;
 
+async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim, stdin = '', onChunk, onSpawn }) {
   const seccompBpfPath = ensureSeccompProgram();
   await ensureParentSlice();
   const cgroup = await createCgroup(id, lim);
-  const hostDir = await mkdtemp(path.join(tmpdir(), 'sandbin-'));
-  await writeFile(path.join(hostDir, spec.file), code);
 
   const seccompFd = 9;
-  const bwrapArgs = buildBwrapArgs({ ...spec, hostDir }, lim, seccompFd);
-  const CGROUP_ASSIGN_FAILED = 91;
+  const bwrapArgs = buildBwrapArgs({ hostDir, argv, extraBinds, boxWritable }, lim, seccompFd);
 
   const script =
     `echo $$ > '${cgroup}/cgroup.procs' || exit ${CGROUP_ASSIGN_FAILED}; ` +
@@ -254,11 +271,38 @@ export async function run({ language = 'python', code = '', stdin = '', limits =
 
   await killCgroup(cgroup);
   await rm(cgroup, { recursive: true, force: true }).catch(() => {});
-  await rm(hostDir, { recursive: true, force: true }).catch(() => {});
 
   return {
-    id, verdict, exitCode: exit.code, signal: exit.signal,
+    verdict, exitCode: exit.code, signal: exit.signal,
     stdout, stderr, truncated,
     durationMs, cpuMs: Math.round(cpuUsec / 1000), peakBytes, oomKills, pidsMaxHits,
   };
+}
+
+export async function run({ language = 'python', code = '', stdin = '', limits = {}, onChunk, onSpawn } = {}) {
+  const spec = IMAGES[language];
+  if (!spec) throw new Error(`unknown language: ${language}`);
+  const lim = { ...DEFAULT_LIMITS, ...limits };
+  const id = randomUUID().slice(0, 8);
+
+  const hostDir = await mkdtemp(path.join(tmpdir(), 'sandbin-'));
+  await writeFile(path.join(hostDir, spec.file), code);
+
+  if (spec.compile) {
+    const compileResult = await spawnInSandbox({
+      id: `${id}c`, hostDir, argv: spec.compile, extraBinds: spec.extraBinds,
+      boxWritable: true, lim: COMPILE_LIMITS,
+    });
+    if (compileResult.verdict !== 'ok') {
+      await rm(hostDir, { recursive: true, force: true }).catch(() => {});
+      const verdict = compileResult.verdict === 'error' ? 'compile_error' : compileResult.verdict;
+      return { id, ...compileResult, verdict };
+    }
+  }
+
+  const result = await spawnInSandbox({
+    id, hostDir, argv: spec.argv, extraBinds: spec.extraBinds, lim, stdin, onChunk, onSpawn,
+  });
+  await rm(hostDir, { recursive: true, force: true }).catch(() => {});
+  return { id, ...result };
 }

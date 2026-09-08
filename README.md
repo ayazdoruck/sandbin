@@ -109,9 +109,47 @@ if (!ticket.accepted) {
 
 `submit()` never throws and never blocks: it returns synchronously, either
 accepted with a queue position or rejected on the spot if the global backlog
-or the caller's own `key` is already at capacity. `key` stands in for a
-tenant or IP until there's an actual API layer with a real notion of caller
-identity.
+or the caller's own `key` is already at capacity.
+
+### Server
+
+```bash
+npm start
+```
+
+Starts an HTTP + WebSocket server on `PORT` (default `8080`) in front of the
+queue.
+
+**`POST /runs`** submits a job and returns immediately:
+
+```bash
+curl -s -X POST localhost:8080/runs \
+  -H 'content-type: application/json' \
+  -d '{"language":"python","code":"print(1+1)"}'
+# -> {"accepted":true,"runId":"...","position":0}
+```
+
+A rejection looks the same shape, with `accepted: false` and no `runId` —
+HTTP 429 for `queue_full`/`key_limit`, 400 for a malformed request (unknown
+language, missing code). The submitter's `key` for per-key limiting is the
+`X-Sandbin-Key` header if present, otherwise their IP.
+
+**`GET /runs/:runId/stream`** (WebSocket) delivers the run's story as JSON
+messages, one per frame:
+
+```
+{ "type": "queued", "position": 2 }
+{ "type": "started" }
+{ "type": "chunk", "stream": "stdout", "text": "2\n" }
+{ "type": "finished", "result": { "verdict": "ok", "stdout": "2\n", ... } }
+```
+
+Connecting after the run has already started replays every chunk seen so
+far before continuing live; connecting after it's finished replays just the
+final `finished` message and closes. Sending `{ "type": "stdin", "text":
+"..." }` over the socket writes to the guest's stdin while it's running —
+this is what makes a real `input()` call work, not just a fixed string
+supplied up front. `{ "type": "stdin_close" }` sends EOF.
 
 ## Tests
 
@@ -157,6 +195,21 @@ slot:
 6/6 passed
 ```
 
+`npm run test:server` spins up the real HTTP + WebSocket server on an
+ephemeral port — no mocks — and drives it end to end:
+
+```
+✅ basic run streams started -> chunk -> finished       queued,started,chunk,finished
+✅ chunks arrive incrementally, not all at once         chunks=3 gaps=300,300
+✅ interactive stdin: reply sent only after seeing the prompt name: hello ayaz
+✅ queue_full over HTTP returns 429                     202,202,429,429
+✅ unknown language returns 400 immediately             {"accepted":false,"verdict":"bad_request",...}
+✅ reconnecting after finish replays the final result   finished
+✅ unknown run id over WS returns an error event        [{"type":"error",...}]
+
+7/7 passed
+```
+
 ## Requirements
 
 - Linux with cgroup v2 and unprivileged user namespaces
@@ -172,12 +225,13 @@ slot:
   available, cgroup assignment fails loudly with the `setup_failed` verdict
   instead of silently running unconfined.
 - Node 20+
+- `ws` — the only runtime dependency, used for the WebSocket server
 
 ## Status
 
-Early. The isolation core — namespaces, cgroups, seccomp, rlimits — and a
-bounded, backpressured job queue both work and are tested. Still to come:
-live output streaming over WebSocket, per-language root filesystems, and a
+Early. The isolation core — namespaces, cgroups, seccomp, rlimits — a
+bounded, backpressured job queue, and a streaming HTTP + WebSocket API all
+work and are tested. Still to come: per-language root filesystems and a
 browser frontend. See [ROADMAP.md](ROADMAP.md).
 
 ### Known issues

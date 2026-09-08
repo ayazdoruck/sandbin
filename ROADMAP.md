@@ -50,13 +50,27 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   actually observed to be bounded under load, backpressure fires exactly at
   capacity, a crashing job still frees its slot for the next one
 
-## Phase 3 — streaming API
+## Phase 3 — streaming API (done)
 
-- HTTP endpoint to submit a run, WebSocket to receive stdout/stderr as it
-  happens rather than waiting for completion
-- protocol: run accepted, run started, output chunk, run finished (verdict +
-  resource stats), matching the shape `sandbox.mjs` already returns
-- interactive stdin support for programs that prompt
+- `POST /runs` submits a job to the queue and returns immediately with
+  `{ accepted, runId, position }` (or a rejection, same as `queue.submit()`)
+- `GET /runs/:id/stream` (WebSocket) delivers `queued` -> `started` ->
+  `chunk` (repeated) -> `finished`, replaying whatever already happened if
+  the client connects late, mid-run, or after the run is done
+- `sandbox.mjs` gained `onChunk`/`onSpawn` hooks so the server can observe a
+  run live without changing `run()`'s existing single-promise contract for
+  callers that don't need streaming
+- interactive stdin: a `{ type: 'stdin', text }` WebSocket message writes to
+  the guest's stdin while it's still running, verified against a real
+  `input()` call that blocks until the reply arrives
+- found and fixed a real bug via the "chunks arrive incrementally" test:
+  CPython fully buffers stdout when it isn't a TTY, so three separate
+  `print()` calls arrived as one chunk at exit instead of three live ones.
+  Fixed with `-u`. Would not have been caught without asserting on real
+  wall-clock gaps between chunks, not just their final content.
+- 7/7 functional cases against a real HTTP+WebSocket server on an ephemeral
+  port, no mocks: incremental delivery, interactive stdin, backpressure over
+  HTTP (429), bad input (400), reconnect-after-finish replay, unknown run id
 
 ## Phase 4 — per-language runtime images
 

@@ -66,7 +66,7 @@ export const DEFAULT_LIMITS = {
 };
 
 export const IMAGES = {
-  python: { file: 'main.py', argv: ['/usr/bin/python3', '-I', '-B', '/box/main.py'] },
+  python: { file: 'main.py', argv: ['/usr/bin/python3', '-I', '-B', '-u', '/box/main.py'] },
   bash: { file: 'main.sh', argv: ['/usr/bin/bash', '--noprofile', '--norc', '/box/main.sh'] },
 };
 
@@ -151,7 +151,7 @@ function buildBwrapArgs(image, lim, seccompFd) {
   ];
 }
 
-export async function run({ language = 'python', code = '', stdin = '', limits = {} } = {}) {
+export async function run({ language = 'python', code = '', stdin = '', limits = {}, onChunk, onSpawn } = {}) {
   const spec = IMAGES[language];
   if (!spec) throw new Error(`unknown language: ${language}`);
   const lim = { ...DEFAULT_LIMITS, ...limits };
@@ -192,12 +192,21 @@ export async function run({ language = 'python', code = '', stdin = '', limits =
     }
     const text = chunk.toString('utf8').slice(0, room);
     if (which === 'out') stdout += text; else stderr += text;
+    if (onChunk) onChunk({ stream: which === 'out' ? 'stdout' : 'stderr', text });
   };
   child.stdout.on('data', (c) => collect(c, 'out'));
   child.stderr.on('data', (c) => collect(c, 'err'));
 
   child.stdin.on('error', () => {});
-  child.stdin.end(stdin);
+  if (onSpawn) {
+    if (stdin) child.stdin.write(stdin);
+    onSpawn({
+      write: (text) => { try { child.stdin.write(text); } catch {} },
+      endStdin: () => { try { child.stdin.end(); } catch {} },
+    });
+  } else {
+    child.stdin.end(stdin);
+  }
 
   const startedAt = Date.now();
   const hardStopGraceMs = 2_000;

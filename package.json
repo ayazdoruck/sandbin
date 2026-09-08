@@ -5,9 +5,16 @@
   "description": "Run untrusted code safely, without Docker.",
   "type": "module",
   "scripts": {
-    "test": "npm run test:sandbox && npm run test:queue",
+    "test": "npm run test:sandbox && npm run test:queue && npm run test:server",
     "test:sandbox": "node src/attack-test.mjs",
-    "test:queue": "node src/queue-test.mjs"
+    "test:queue": "node src/queue-test.mjs",
+    "test:server": "node src/server-test.mjs",
+    "start": "node src/server.mjs"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
 }

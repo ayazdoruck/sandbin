@@ -24,20 +24,8 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Diagnose cgroup type and permissions
-        run: |
-          OWN=/sys/fs/cgroup$(cut -d: -f3- </proc/self/cgroup)
-          echo "own cgroup: $OWN"
-          echo "own type: $(cat $OWN/cgroup.type 2>&1)"
-          echo "own controllers: $(cat $OWN/cgroup.controllers 2>&1)"
-          sudo mkdir -p "$OWN/sandbin.slice"
-          echo "sandbin.slice type: $(cat $OWN/sandbin.slice/cgroup.type 2>&1)"
-          sudo bash -c "echo '+memory +pids +cpu' > $OWN/sandbin.slice/cgroup.subtree_control" 2>&1 || echo "enable failed"
-          sudo mkdir -p "$OWN/sandbin.slice/run-diag"
-          echo "run-diag type: $(cat $OWN/sandbin.slice/run-diag/cgroup.type 2>&1)"
-          ls -la "$OWN/sandbin.slice/run-diag/" | head -5
-          sudo bash -c "echo 134217728 > $OWN/sandbin.slice/run-diag/memory.max" 2>&1 || echo "memory.max write failed: $?"
-          cat "$OWN/sandbin.slice/run-diag/memory.max" 2>&1
+      - name: Debug one run with verbose cgroup logging
+        run: sudo env "PATH=$PATH" SANDBIN_DEBUG=1 node src/debug-once.mjs
 
       - name: Run tests
         run: sudo env "PATH=$PATH" npm test

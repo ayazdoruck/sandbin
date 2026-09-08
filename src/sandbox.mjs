@@ -17,12 +17,35 @@ function availableControllers(dir) {
   }
 }
 
+function isProcessFree(dir) {
+  try {
+    return readFileSync(path.join(dir, 'cgroup.procs'), 'utf8').trim() === '';
+  } catch {
+    return false;
+  }
+}
+
+function alreadyEnabled(dir) {
+  try {
+    const enabled = new Set(
+      readFileSync(path.join(dir, 'cgroup.subtree_control'), 'utf8').trim().split(/\s+/).filter(Boolean)
+    );
+    return NEEDED_CONTROLLERS.every((c) => enabled.has(c));
+  } catch {
+    return false;
+  }
+}
+
 function findDelegatedRoot() {
   const ownPath = readFileSync('/proc/self/cgroup', 'utf8').trim().replace(/^0::/, '');
   let dir = path.join(CGROUP_FS_ROOT, ownPath);
   while (dir !== CGROUP_FS_ROOT && dir !== path.dirname(dir)) {
-    const available = availableControllers(dir);
-    if (NEEDED_CONTROLLERS.every((c) => available.has(c))) return dir;
+    const hasAllControllers = NEEDED_CONTROLLERS.every((c) => availableControllers(dir).has(c));
+    // Enabling subtree_control on a cgroup that still holds resident
+    // processes fails with EBUSY (the "no internal process" constraint), so
+    // only a process-free ancestor - or one where delegation is already
+    // active - can actually host sandbin's tree.
+    if (hasAllControllers && (alreadyEnabled(dir) || isProcessFree(dir))) return dir;
     dir = path.dirname(dir);
   }
   return path.join(CGROUP_FS_ROOT, ownPath);
@@ -47,12 +70,19 @@ export const IMAGES = {
   bash: { file: 'main.sh', argv: ['/usr/bin/bash', '--noprofile', '--norc', '/box/main.sh'] },
 };
 
+const DEBUG = !!process.env.SANDBIN_DEBUG;
+
 async function enableControllers(dir) {
   const toEnable = NEEDED_CONTROLLERS.filter((c) => availableControllers(dir).has(c));
-  if (toEnable.length === 0) return;
+  if (toEnable.length === 0) {
+    if (DEBUG) console.error(`[sandbin] ${dir}: no needed controllers available, skipping`);
+    return;
+  }
   try {
     await writeFile(path.join(dir, 'cgroup.subtree_control'), toEnable.map((c) => `+${c}`).join(' '));
+    if (DEBUG) console.error(`[sandbin] ${dir}: enabled ${toEnable.join(',')}`);
   } catch (err) {
+    if (DEBUG) console.error(`[sandbin] ${dir}: enable failed ${err.code} ${err.message}`);
     if (err.code !== 'EBUSY' && err.code !== 'EINVAL' && err.code !== 'EACCES' && err.code !== 'ENOENT') {
       throw err;
     }
@@ -60,6 +90,7 @@ async function enableControllers(dir) {
 }
 
 async function ensureParentSlice() {
+  if (DEBUG) console.error(`[sandbin] CG_ROOT=${CG_ROOT}`);
   await mkdir(CG_PARENT, { recursive: true });
   await enableControllers(CG_ROOT);
   await enableControllers(CG_PARENT);
@@ -68,6 +99,9 @@ async function ensureParentSlice() {
 async function createCgroup(id, limits) {
   const dir = path.join(CG_PARENT, `run-${id}`);
   await mkdir(dir, { recursive: true });
+  if (DEBUG) {
+    console.error(`[sandbin] ${dir}: created, own controllers=${[...availableControllers(dir)].join(',')}`);
+  }
   await writeFile(path.join(dir, 'memory.max'), String(limits.memoryBytes));
   await writeFile(path.join(dir, 'memory.swap.max'), '0');
   await writeFile(path.join(dir, 'pids.max'), String(limits.pids));

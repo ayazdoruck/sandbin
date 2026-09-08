@@ -98,7 +98,6 @@ const CASES = [
 let passed = 0;
 for (const c of CASES) {
   const r = await run(c);
-  if (r.verdict === 'error' && r.durationMs < 50) console.error('DEBUG', c.name, JSON.stringify(r.stderr));
   const good = !!c.check(r);
   if (good) passed++;
   console.log(

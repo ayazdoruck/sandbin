@@ -1,0 +1,11 @@
+{
+  "name": "sandbin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run untrusted code safely, without Docker.",
+  "type": "module",
+  "scripts": {
+    "test": "node src/attack-test.mjs"
+  },
+  "engines": { "node": ">=20" }
+}

@@ -27,5 +27,5 @@ jobs:
       - name: Run tests in a delegated cgroup
         run: |
           sudo systemd-run --uid="$(id -u)" --gid="$(id -g)" --scope \
-            --property=Delegate=yes --same-dir \
-            -- npm test
+            --property=Delegate=yes --same-dir -- \
+            bash -c 'sudo chown -R "$(id -u):$(id -g)" "/sys/fs/cgroup$(cut -d: -f3- </proc/self/cgroup)" && npm test'

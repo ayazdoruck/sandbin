@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install bubblewrap and libseccomp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap libseccomp-dev
+
+      - name: Show cgroup v2 delegation
+        run: |
+          cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers
+
+      - run: npm test

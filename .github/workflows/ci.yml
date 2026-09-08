@@ -24,8 +24,5 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Run tests in a delegated cgroup
-        run: |
-          sudo systemd-run --uid="$(id -u)" --gid="$(id -g)" --scope \
-            --property=Delegate=yes --same-dir -- \
-            bash -c 'sudo chown -R "$(id -u):$(id -g)" "/sys/fs/cgroup$(cut -d: -f3- </proc/self/cgroup)" && npm test'
+      - name: Run tests
+        run: sudo env "PATH=$PATH" npm test

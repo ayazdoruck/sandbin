@@ -83,6 +83,36 @@ The seccomp policy is compiled from `seccomp/policy.c` on first use and cached
 as `seccomp/policy.bpf`; neither file is checked in, both are regenerated
 automatically the first time `run()` is called.
 
+### Queue
+
+Calling `run()` directly spawns a sandbox immediately, with no limit on how
+many run at once. `queue.mjs` sits in front of it for anything with more than
+one caller:
+
+```js
+import { createQueue } from './src/queue.mjs';
+
+const queue = createQueue({ maxConcurrency: 4, maxQueueLength: 64, maxPerKey: 8 });
+
+const ticket = queue.submit(
+  { language: 'python', code: 'print("hi")' },
+  { key: 'user-123' }
+);
+
+if (!ticket.accepted) {
+  console.log(ticket.verdict); // 'queue_full' or 'key_limit'
+} else {
+  console.log('queued at position', ticket.position);
+  const result = await ticket.result; // same shape as run()'s, plus queuedMs
+}
+```
+
+`submit()` never throws and never blocks: it returns synchronously, either
+accepted with a queue position or rejected on the spot if the global backlog
+or the caller's own `key` is already at capacity. `key` stands in for a
+tenant or IP until there's an actual API layer with a real notion of caller
+identity.
+
 ## Tests
 
 ```bash
@@ -111,6 +141,22 @@ counters, host-side file checks, the specific errno a blocked syscall returns
 23/23 contained
 ```
 
+`npm run test:queue` covers the queue separately, against real spawned
+sandbox runs rather than mocks — actual concurrency observed under load,
+backpressure firing exactly at capacity, a crashing job still freeing its
+slot:
+
+```
+✅ concurrency is bounded                           peakRunning=3
+✅ queue_full rejects past capacity, immediately    accepted=3 rejected=2
+✅ per-key limit is independent of other keys       acceptedA=2 rejectedA=2 ticketsB.accepted=true
+✅ queuedMs reflects real wait time                 first=0ms second=523ms
+✅ queue returns to idle after draining             running=0 waiting=0 keys=0
+✅ a failing job still releases its concurrency slot crash=error after=ok
+
+6/6 passed
+```
+
 ## Requirements
 
 - Linux with cgroup v2 and unprivileged user namespaces
@@ -129,10 +175,10 @@ counters, host-side file checks, the specific errno a blocked syscall returns
 
 ## Status
 
-Early. The isolation core — namespaces, cgroups, seccomp, rlimits — works and
-is tested. Still to come: a job queue with bounded concurrency, live output
-streaming over WebSocket, per-language root filesystems, and a browser
-frontend. See [ROADMAP.md](ROADMAP.md).
+Early. The isolation core — namespaces, cgroups, seccomp, rlimits — and a
+bounded, backpressured job queue both work and are tested. Still to come:
+live output streaming over WebSocket, per-language root filesystems, and a
+browser frontend. See [ROADMAP.md](ROADMAP.md).
 
 ### Known issues
 

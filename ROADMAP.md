@@ -34,13 +34,21 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   ptrace, mount, io_uring, raw socket — each must fail — while subprocess,
   threading, and every Phase-0 case still pass. 23/23 contained.
 
-## Phase 2 — job queue and concurrency
+## Phase 2 — job queue and concurrency (done)
 
-- bounded worker pool; a run is queued, not spawned immediately
-- per-tenant / per-IP concurrency and rate limits
-- queue depth and wait time surfaced in the response
-- backpressure: reject fast with a clear error once the queue is full, rather
-  than degrading every run's limits
+- bounded worker pool: `maxConcurrency` caps how many sandboxed runs execute
+  at once, everything past that queues in FIFO order
+- per-key concurrency limit (`maxPerKey`) stands in for per-tenant / per-IP
+  limits until there's an actual API layer with a real notion of caller
+  identity — same mechanism, `key` is just a string for now
+- `queuedMs` on every result, `position` returned synchronously at submit
+  time, `stats()` for queue depth and running count
+- backpressure: `maxQueueLength` rejects immediately with `queue_full` (or
+  `key_limit`) once the backlog is full, rather than accepting unbounded
+  work or shrinking every run's resource limits
+- 6/6 functional cases, all against real spawned sandbox runs: concurrency
+  actually observed to be bounded under load, backpressure fires exactly at
+  capacity, a crashing job still frees its slot for the next one
 
 ## Phase 3 — streaming API
 

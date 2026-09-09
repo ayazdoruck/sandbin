@@ -14,6 +14,7 @@ const SAMPLES = {
   bash: 'echo "hello from sandbin"',
   node: 'console.log("hello from sandbin")',
   c: '#include <stdio.h>\nint main(){ printf("hello from sandbin\\n"); return 0; }',
+  go: 'package main\nimport "fmt"\nfunc main() { fmt.Println("hello from sandbin") }',
 };
 
 let socket = null;

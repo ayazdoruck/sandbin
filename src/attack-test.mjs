@@ -1,4 +1,4 @@
-import { run } from './sandbox.mjs';
+import { run, IMAGES } from './sandbox.mjs';
 import { existsSync } from 'node:fs';
 
 const CASES = [
@@ -129,6 +129,27 @@ const CASES = [
   { name: 'c: network blocked at the syscall level', language: 'c',
     code: '#include <sys/socket.h>\n#include <netinet/in.h>\n#include <arpa/inet.h>\n#include <stdio.h>\nint main(){ int fd = socket(AF_INET, SOCK_STREAM, 0); struct sockaddr_in a = {0}; a.sin_family = AF_INET; a.sin_port = htons(80); inet_pton(AF_INET, "1.1.1.1", &a.sin_addr); int r = connect(fd, (struct sockaddr*)&a, sizeof(a)); printf("connect=%d\\n", r); return 0; }',
     check: (r) => !r.stdout.includes('connect=0') },
+
+  // Go is only registered when the host actually has a toolchain (see
+  // sandbox.mjs) — these cases run for real wherever it's available and are
+  // skipped, not faked, everywhere else.
+  ...(IMAGES.go ? [
+    { name: 'go: compiles and runs', language: 'go',
+      code: 'package main\nimport "fmt"\nfunc main() { fmt.Println("hello from go"); fmt.Println(2 << 10) }',
+      check: (r) => r.verdict === 'ok' && r.stdout.includes('hello from go') && r.stdout.includes('2048') },
+
+    { name: 'go: syntax error reported as compile_error', language: 'go',
+      code: 'package main\nfunc main() { this is not go',
+      check: (r) => r.verdict === 'compile_error' && r.stderr.length > 0 },
+
+    { name: 'go: network blocked at the syscall level', language: 'go',
+      code: 'package main\nimport ("fmt"; "net")\nfunc main() {\n  _, err := net.Dial("tcp", "1.1.1.1:80")\n  if err != nil { fmt.Println("blocked:", err) } else { fmt.Println("CONNECTED") }\n}',
+      check: (r) => r.verdict === 'ok' && !r.stdout.includes('CONNECTED') },
+
+    { name: 'go: sustained memory bomb caught', language: 'go',
+      code: 'package main\nimport "time"\nfunc main() {\n  b := make([]byte, 200*1024*1024)\n  for i := range b { b[i] = 1 }\n  time.Sleep(3 * time.Second)\n}',
+      check: (r) => r.verdict === 'memory_limit' && r.oomKills > 0 },
+  ] : []),
 ];
 
 let passed = 0;

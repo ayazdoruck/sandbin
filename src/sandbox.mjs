@@ -1,13 +1,57 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { mkdir, writeFile, readFile, rm, mkdtemp } from 'node:fs/promises';
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ensureSeccompProgram } from './seccomp.mjs';
 
+const DEBUG = !!process.env.SANDBIN_DEBUG;
+
 const NODE_BIN = realpathSync(process.execPath);
 const NODE_ROOT = path.dirname(path.dirname(NODE_BIN));
+
+function resolveToolchain(command, args) {
+  try {
+    return execFileSync(command, args, { encoding: 'utf8' }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// go is frequently managed by a version-switching shim (mise, asdf) that
+// lives outside /usr and needs host state to resolve a version. Rather than
+// expose that shim into the sandbox, resolve it once here and bind the real
+// toolchain install straight in, the same way NODE_BIN above sidesteps
+// needing to know where node itself happens to be installed.
+const GO_ROOT = resolveToolchain('go', ['env', 'GOROOT']);
+const GO_BIN = GO_ROOT ? path.join(GO_ROOT, 'bin', 'go') : null;
+const GO_CACHE_DIR = path.join(process.cwd(), 'data', 'go-cache');
+
+// A guest's own GOCACHE is this same directory every time (shared, writable
+// — see IMAGES.go below), but it starts out empty on a fresh checkout. With
+// an empty cache, compiling anything at all means compiling the Go runtime
+// and standard library from source first, which blows straight through the
+// compile sandbox's file-size and memory ceilings sized for a one-file
+// program. Warm the shared cache once, outside the sandbox entirely, so
+// every real guest compile only ever has its own tiny package left to do.
+function warmGoCache() {
+  try {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sandbin-gowarm-'));
+    writeFileSync(path.join(dir, 'main.go'), 'package main\nfunc main() {}\n');
+    execFileSync(GO_BIN, ['build', '-o', path.join(dir, 'a.out'), path.join(dir, 'main.go')], {
+      env: { ...process.env, GOCACHE: GO_CACHE_DIR, GOPATH: path.join(dir, 'gopath'), CGO_ENABLED: '0' },
+      timeout: 60_000,
+    });
+  } catch (err) {
+    if (DEBUG) console.error(`[sandbin] go cache warm-up failed: ${err.message}`);
+  }
+}
+
+if (GO_BIN) {
+  mkdirSync(GO_CACHE_DIR, { recursive: true });
+  warmGoCache();
+}
 
 const NEEDED_CONTROLLERS = ['cpu', 'memory', 'pids'];
 const CGROUP_FS_ROOT = '/sys/fs/cgroup';
@@ -90,7 +134,19 @@ export const IMAGES = {
   },
 };
 
-const DEBUG = !!process.env.SANDBIN_DEBUG;
+// Go is only registered when its toolchain was actually found on this host
+// (see resolveToolchain above) — sandbin offers exactly the languages the
+// machine it's running on can actually compile, rather than assuming a
+// fixed install.
+if (GO_BIN) {
+  IMAGES.go = {
+    file: 'main.go',
+    compile: [GO_BIN, 'build', '-o', '/box/a.out', '/box/main.go'],
+    argv: ['/box/a.out'],
+    extraBinds: [GO_ROOT, { host: GO_CACHE_DIR, guest: '/gocache', writable: true }],
+    env: { GOCACHE: '/gocache', GOPATH: '/tmp/go', GOFLAGS: '-p=2', GOMAXPROCS: '2', CGO_ENABLED: '0' },
+  };
+}
 
 async function enableControllers(dir) {
   const toEnable = NEEDED_CONTROLLERS.filter((c) => availableControllers(dir).has(c));
@@ -145,8 +201,12 @@ async function readStat(dir, file, fallback = '') {
   }
 }
 
-function buildBwrapArgs({ hostDir, argv, extraBinds, boxWritable }, lim, seccompFd) {
-  const extraBindArgs = (extraBinds ?? []).flatMap((p) => ['--ro-bind', p, p]);
+function buildBwrapArgs({ hostDir, argv, extraBinds, env, boxWritable }, lim, seccompFd) {
+  const extraBindArgs = (extraBinds ?? []).flatMap((b) => {
+    if (typeof b === 'string') return ['--ro-bind', b, b];
+    return [b.writable ? '--bind' : '--ro-bind', b.host, b.guest ?? b.host];
+  });
+  const envArgs = Object.entries(env ?? {}).flatMap(([k, v]) => ['--setenv', k, v]);
   const boxBindFlag = boxWritable ? '--bind' : '--ro-bind';
   return [
     '--unshare-all',
@@ -156,6 +216,7 @@ function buildBwrapArgs({ hostDir, argv, extraBinds, boxWritable }, lim, seccomp
     '--setenv', 'PATH', '/usr/bin',
     '--setenv', 'HOME', '/tmp',
     '--setenv', 'LANG', 'C.UTF-8',
+    ...envArgs,
     '--ro-bind', '/usr', '/usr',
     '--ro-bind', '/etc/ld.so.cache', '/etc/ld.so.cache',
     ...extraBindArgs,
@@ -177,13 +238,13 @@ function buildBwrapArgs({ hostDir, argv, extraBinds, boxWritable }, lim, seccomp
 const CGROUP_ASSIGN_FAILED = 91;
 const STATS_INTERVAL_MS = 50;
 
-async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim, stdin = '', onChunk, onSpawn, onStats }) {
+async function spawnInSandbox({ id, hostDir, argv, extraBinds, env, boxWritable, lim, stdin = '', onChunk, onSpawn, onStats }) {
   const seccompBpfPath = ensureSeccompProgram();
   await ensureParentSlice();
   const cgroup = await createCgroup(id, lim);
 
   const seccompFd = 9;
-  const bwrapArgs = buildBwrapArgs({ hostDir, argv, extraBinds, boxWritable }, lim, seccompFd);
+  const bwrapArgs = buildBwrapArgs({ hostDir, argv, extraBinds, env, boxWritable }, lim, seccompFd);
 
   const script =
     `echo $$ > '${cgroup}/cgroup.procs' || exit ${CGROUP_ASSIGN_FAILED}; ` +
@@ -301,7 +362,7 @@ export async function run({ language = 'python', code = '', stdin = '', limits =
 
   if (spec.compile) {
     const compileResult = await spawnInSandbox({
-      id: `${id}c`, hostDir, argv: spec.compile, extraBinds: spec.extraBinds,
+      id: `${id}c`, hostDir, argv: spec.compile, extraBinds: spec.extraBinds, env: spec.env,
       boxWritable: true, lim: COMPILE_LIMITS,
     });
     if (compileResult.verdict !== 'ok') {
@@ -312,7 +373,7 @@ export async function run({ language = 'python', code = '', stdin = '', limits =
   }
 
   const result = await spawnInSandbox({
-    id, hostDir, argv: spec.argv, extraBinds: spec.extraBinds, lim, stdin, onChunk, onSpawn, onStats,
+    id, hostDir, argv: spec.argv, extraBinds: spec.extraBinds, env: spec.env, lim, stdin, onChunk, onSpawn, onStats,
   });
   await rm(hostDir, { recursive: true, force: true }).catch(() => {});
   return { id, ...result };

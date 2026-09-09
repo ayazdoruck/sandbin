@@ -40,7 +40,7 @@
 
   <table>
     <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
-    <tr><td><code>language</code></td><td>string</td><td><code>python</code>, <code>bash</code>, <code>node</code> or <code>c</code></td></tr>
+    <tr><td><code>language</code></td><td>string</td><td><code>python</code>, <code>bash</code>, <code>node</code>, <code>c</code>, or <code>go</code> if the host running sandbin has a Go toolchain</td></tr>
     <tr><td><code>code</code></td><td>string</td><td>source to run</td></tr>
     <tr><td><code>stdin</code></td><td>string</td><td>optional, written before the guest starts reading</td></tr>
     <tr><td><code>limits</code></td><td>object</td><td>optional overrides &mdash; <code>memoryBytes</code>, <code>cpuPercent</code>, <code>wallClockMs</code>, <code>pids</code>, and others</td></tr>

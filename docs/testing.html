@@ -79,7 +79,7 @@
   <h2>Six suites</h2>
   <table>
     <tr><th>Suite</th><th>Command</th><th>Covers</th></tr>
-    <tr><td>Sandbox</td><td><code>npm run test:sandbox</code></td><td>32 adversarial cases against real spawned sandboxes: namespace escapes, resource ceilings, seccomp denials, per-language checks</td></tr>
+    <tr><td>Sandbox</td><td><code>npm run test:sandbox</code></td><td>36 adversarial cases against real spawned sandboxes: namespace escapes, resource ceilings, seccomp denials, per-language checks (4 of the 36 are Go's, and only run on a host with a Go toolchain)</td></tr>
     <tr><td>Queue</td><td><code>npm run test:queue</code></td><td>6 cases against real spawned runs: bounded concurrency observed under load, backpressure firing exactly at capacity, a crashing job still freeing its slot</td></tr>
     <tr><td>Permalinks</td><td><code>npm run test:permalinks</code></td><td>5 cases against a real temp directory: save/load roundtrip, TTL expiry and sweep driven by an injected clock, not a real 30-day wait</td></tr>
     <tr><td>Rate limit</td><td><code>npm run test:ratelimit</code></td><td>5 cases against the fixed-window counter directly: independent ids, window reset driven by an injected clock</td></tr>

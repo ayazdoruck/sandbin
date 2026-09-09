@@ -106,7 +106,7 @@ static const char *const scheduling[] = {
 static const char *const identity[] = {
     "getpid", "gettid", "getppid", "getpgrp", "getpgid", "setpgid", "getsid",
     "setsid", "getuid", "geteuid", "getgid", "getegid", "getresuid",
-    "getresgid", "getgroups",
+    "getresgid", "getgroups", "setuid", "setgid", "setresuid", "setresgid",
 };
 
 static const char *const misc_info[] = {

@@ -78,12 +78,28 @@ console.log(result.verdict, result.stdout);
 // -> ok  '4950\n'
 ```
 
-`language` is `python`, `bash`, `node` or `c`. The first three run directly;
-`c` compiles with `gcc` under its own more permissive limits first (256 MB,
+`language` is `python`, `bash`, `node`, `c` or `go` (Go only if a toolchain
+was actually found on the host — see below). Python/Bash/Node run directly;
+`c` and `go` compile first under their own more permissive limits (256 MB,
 10 s — compiling legitimately needs more of both than running a script does)
-and only executes the result if that succeeds. A compile failure returns
+and only execute the result if that succeeds. A compile failure returns
 verdict `compile_error` with the compiler's diagnostic as `stderr`, without
 ever reaching the execute phase.
+
+Go's toolchain is resolved the same way Node's is: `go env GOROOT` rather
+than assuming `/usr/bin/go`, since it's commonly managed by a version
+switcher (mise, asdf) that lives outside `/usr`. `go` is only added to the
+language list when that resolves to something real — clone the repo without
+Go installed and `language: 'go'` just isn't offered, no broken option left
+behind. Its build cache is a real, persistent, shared directory
+(`data/go-cache/`) rather than a fresh empty one per run: an empty cache
+means compiling the entire Go standard library from source before it can
+compile anything else, which blows straight through the compile sandbox's
+memory and file-size ceilings sized for a one-file program. It's warmed
+once, unsandboxed, the first time `sandbox.mjs` loads with Go available —
+after that, every real sandboxed compile only ever has its own small
+package left to build. `CGO_ENABLED=0` keeps Go's own network code from
+needing to shell out to `gcc` at compile time for cgo-based resolution.
 
 `verdict` is one of `ok`, `error`, `timeout`, `memory_limit`, `output_limit`,
 `killed`, `setup_failed`, `compile_error`. The result also carries `cpuMs`,
@@ -238,17 +254,20 @@ counters, host-side file checks, the specific errno a blocked syscall returns
 ✅ fork loop                              ✅ c: nonzero exit code surfaces as error
 ✅ network blocked                        ✅ c: sustained memory bomb caught
 ✅ host fs invisible                      ✅ c: network blocked at the syscall level
-✅ writes stay inside
-✅ host pids hidden
-✅ output flood
-✅ tmpfs bounded
+✅ writes stay inside                     ✅ go: compiles and runs
+✅ host pids hidden                       ✅ go: syntax error reported as compile_error
+✅ output flood                           ✅ go: network blocked at the syscall level
+✅ tmpfs bounded                          ✅ go: sustained memory bomb caught
 ✅ nested user namespace blocked
 ✅ raw clone with new-user flag blocked
 ✅ raw clone without dangerous flags still works
 ✅ clone3 falls back instead of aborting
 
-32/32 contained
+36/36 contained
 ```
+
+The four `go:` cases only run — and only count toward the total — on a host
+where a Go toolchain was actually found.
 
 `npm run test:queue` covers the queue separately, against real spawned
 sandbox runs rather than mocks — actual concurrency observed under load,
@@ -347,14 +366,18 @@ ephemeral port — no mocks — and drives it end to end:
   instead of silently running unconfined.
 - Node 20+
 - `ws` — the only runtime dependency, used for the WebSocket server
+- A Go toolchain, only if you want the `go` language option — entirely
+  optional, resolved at startup via `go env GOROOT`; without one, `go` just
+  isn't in the language list
 
 ## Status
 
-All nine roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
+All ten roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
 a bounded and backpressured job queue, a streaming HTTP + WebSocket API,
-Python/Bash/Node/C support, a minimal browser frontend with a live resource
-graph and shareable permalinks, API keys with per-tier rate limits, and CI
-running all six test suites on every push. `npm start` and open it. See
+Python/Bash/Node/C support plus Go wherever a toolchain is available, a
+minimal browser frontend with a live resource graph and shareable
+permalinks, API keys with per-tier rate limits, and CI running all six test
+suites on every push. `npm start` and open it. See
 [ROADMAP.md](ROADMAP.md) for what was actually found building each phase —
 several real bugs, not just a feature checklist.
 
@@ -371,3 +394,14 @@ several real bugs, not just a feature checklist.
   language — see the C findings in [ROADMAP.md](ROADMAP.md#phase-4--per-language-runtime-images-done)
   for how this was found. A *sustained* excess is always caught; the gap is
   specifically for spikes fast enough to free themselves first.
+- Rust was attempted alongside Go and shelved, not shipped half-working:
+  `rustc`, sandboxed, fails invoking its own linker with a bare `EPERM`
+  and zero observable `fork`/`vfork`/`posix_spawn`/`execve` calls at the
+  point of failure — checked via `LD_PRELOAD` interposition on every one of
+  those symbols, which reliably catches the same call for every other
+  binary tested this way, `rustc` included when run unsandboxed. Whatever
+  syscall it actually makes isn't going through a libc entry point at all,
+  which is as far as this can be diagnosed without `strace` or root on the
+  box that found it. See [ROADMAP.md](ROADMAP.md#phase-10--go-support-done-rust-attempted-and-shelved)
+  for the full trail, kept rather than deleted so the next attempt doesn't
+  repeat it.

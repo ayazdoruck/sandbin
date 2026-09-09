@@ -135,6 +135,25 @@
     <a href="architecture">Architecture</a>.
   </p>
 
+  <h3><code>setuid</code>/<code>setgid</code>/<code>setresuid</code>/<code>setresgid</code></h3>
+  <p>
+    Adding Go surfaced this one by accident, chasing what turned out to be
+    a different, unresolved problem in <code>rustc</code> specifically (see
+    <a href="https://github.com/ayazdoruck/sandbin/blob/main/ROADMAP.md#phase-10--go-support-done-rust-attempted-and-shelved">ROADMAP.md</a>
+    for that full trail). A minimal, isolated reproduction &mdash;
+    <code>os.posix_spawn(..., resetids=True)</code> &mdash; failed with a
+    bare <code>EPERM</code> before ever reaching the target program:
+    <code>POSIX_SPAWN_RESETIDS</code> makes glibc call <code>setuid()</code>
+    in the child unconditionally, even when the real and effective uid are
+    already identical and the call is a complete no-op. None of the
+    <code>setuid</code> family was on the allowlist &mdash; an oversight,
+    the same category as <code>umask</code> above, not a deliberate
+    exclusion. Added back with no real cost: an unprivileged process
+    calling <code>setuid()</code> on its own uid changes nothing the
+    kernel's own permission check wouldn't already block if it tried to
+    change anything else.
+  </p>
+
   <h3>The frontend hid correct behavior as a bug</h3>
   <p>
     Actually clicking through the UI in a browser &mdash; not just trusting

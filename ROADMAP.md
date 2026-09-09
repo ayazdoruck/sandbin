@@ -264,3 +264,93 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   already exhausted, proving the two tiers are genuinely separate buckets
   and not just a relabeled version of the same counter
 - 69/69 tests passing across six suites
+
+## Phase 10 — Go support (done), Rust attempted and shelved
+
+- `go` joins `c` as the second compiled language, registered in `IMAGES`
+  only when `go env GOROOT` actually resolves to something — the same
+  "offer exactly what the host can do" principle Node's own binary
+  resolution already established, extended to an entire language rather
+  than just a binary path. A host without Go installed simply doesn't
+  offer it; nothing breaks, nothing lies about being available
+- toolchains managed by a version-switching shim (`mise`, `rustup`,
+  `asdf`) don't live under `/usr` and the shim itself needs host state
+  (config files, env vars) to pick a version — state that has no business
+  being inside the sandbox. `resolveToolchain()` asks the shim once, on
+  the host, for the real install root (`go env GOROOT`), and every
+  sandboxed run binds that root in directly and execs the real binary,
+  never the shim
+- the interesting failure was resource, not security: `go build` on a
+  cold cache means compiling the Go runtime and standard library from
+  source, and that blew through the compile sandbox's `pids.max` (Go's
+  own scheduler spawns OS threads for parallel compilation) and then its
+  `ulimit -f` (an intermediate package archive for `runtime` itself
+  landed over the file-size cap) — both real ceilings doing exactly what
+  they're for, just sized for a one-file program compiling against an
+  already-built stdlib, not building that stdlib from nothing. Capping
+  `GOMAXPROCS=2` fixed the first; the second needed an actual persistent,
+  shared, writable `GOCACHE` (`data/go-cache/`), warmed once with a
+  trivial program *outside* the sandbox entirely (no ceilings, because
+  there's nothing adversarial about compiling the standard library) the
+  first time a Go-capable `sandbox.mjs` loads. Every real sandboxed
+  compile after that only ever has its own small package left to build —
+  verified empirically, not assumed: the same "hello world" compile went
+  from failing on a cold cache to a 14 ms `ok` once the cache was warm,
+  same limits, same everything else
+- `net` alone, even after the cache was warm, still failed differently:
+  Go's `net` package can fall back to `cgo` for name resolution, which
+  means shelling out to `gcc` as a *second* compiler invocation from
+  inside the first one — an entire extra layer of process spawning that
+  has no reason to exist for a sandboxed guest that was never going to
+  reach a real resolver anyway. `CGO_ENABLED=0` forces Go's own
+  pure-Go resolver, which needed nothing from `gcc` and nothing extra
+  from the sandbox once removed
+- adversarial coverage added to `test:sandbox` follows the exact pattern
+  Node and C already established — compile-and-run, a syntax error
+  surfacing as `compile_error`, network blocked at the syscall level
+  (`net.Dial` failing with the guest's own `EPERM`, not a timeout), and a
+  sustained memory bomb caught by the cgroup, `oomKills > 0`. All four are
+  wrapped in `IMAGES.go ? [...] : []` so the suite is still exactly right
+  — neither inflated nor silently short — on a host without Go
+- **Rust was attempted in the same pass and shelved, not shipped broken.**
+  `rustc`, sandboxed, fails invoking its own linker (`cc`) with a bare
+  `EPERM` — the *exact* symptom `POSIX_SPAWN_RESETIDS` produces when the
+  `setuid`/`setgid`/`setresuid`/`setresgid` family is missing from the
+  seccomp allowlist, which it was: an oversight, not a deliberate
+  exclusion, in the same category as `umask` and `getsockopt` from Phase
+  4 — a syscall family with no real security cost to allow (an
+  unprivileged process calling `setuid()` on its own uid is a genuine
+  no-op; the kernel's own permission check, not this filter, is what
+  would actually stop anything more) but the fix, verified with an
+  isolated reproduction via `os.posix_spawn(resetids=True)`, did not fix
+  `rustc` itself. It's kept in the policy anyway — real, evidenced, and
+  harmless — while the hunt for what `rustc` *actually* hits continued
+  and came up short:
+  - reproduced with an `LD_PRELOAD` shim interposing `fork`, `vfork`,
+    `posix_spawn`, `posix_spawnp`, `execve`, and the raw `syscall()` entry
+    point for the `clone`/`vfork`/`execve`/`clone3`/`execveat` numbers
+    specifically — confirmed working (it catches `bash`'s own `fork`+`exec`
+    of `cc` inside the identical sandbox, and catches `rustc`'s own spawn
+    of `cc` when run *unsandboxed* on the host) but sees *nothing at all*
+    from `rustc` the moment it runs sandboxed, right up to the same error
+  - `AT_SECURE` (glibc's dynamic-linker secure-execution flag, which would
+    explain `LD_PRELOAD` being silently ignored) checked directly via
+    `getauxval(AT_SECURE)` inside the sandbox: 0, both as the direct exec
+    target and via an inner shell — ruled out, not assumed
+  - cgroup `pids.max`, `memory.max`, the compile sandbox's `ulimit -f`, and
+    process/session-group leadership were each isolated and individually
+    ruled out by direct reproduction with only that one variable changed
+  - what's left, that would explain a real spawn attempt producing zero
+    matches against *any* of `fork`/`vfork`/`posix_spawn`/`posix_spawnp`/
+    `execve`/raw-`syscall`-for-those-numbers: `rustc` issuing the
+    equivalent syscall through neither a named libc symbol nor libc's own
+    generic `syscall()` entry point — e.g. an inlined raw syscall
+    instruction compiled directly into `rustc`'s own binary. That's a real
+    hypothesis, not a confirmed one, and confirming it needs kernel-level
+    tracing (`strace`, or root for `auditd`/`ftrace`) that wasn't available
+    where this was investigated
+  - left out of `IMAGES` entirely rather than registered and silently
+    broken. The setuid/setgid fix stays; `rust` stays absent until this is
+    actually resolved, not worked around with a guess
+- 73/73 tests passing across six suites (`test:sandbox` gained the four
+  Go cases; everything else unchanged)

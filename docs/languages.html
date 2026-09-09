@@ -28,7 +28,7 @@
 
 <main>
   <h1>Languages</h1>
-  <p class="lede">Two interpreters, one runtime with its binary in an unusual place, and one compiled language &mdash; enough to prove the design isn't interpreter-only.</p>
+  <p class="lede">Two interpreters, one runtime with its binary in an unusual place, and two compiled languages &mdash; enough to prove the design isn't interpreter-only.</p>
 
   <table>
     <tr><th>Language</th><th>Runs as</th><th>Notable</th></tr>
@@ -36,6 +36,7 @@
     <tr><td><code>bash</code></td><td><code>bash --noprofile --norc</code></td><td>no startup files read</td></tr>
     <tr><td><code>node</code></td><td>the exact node binary running sandbin itself</td><td>resolved at startup, not assumed to live in <code>/usr</code></td></tr>
     <tr><td><code>c</code></td><td><code>gcc</code>, then the resulting binary</td><td>two separate sandboxed invocations, not one</td></tr>
+    <tr><td><code>go</code></td><td><code>go build</code>, then the resulting binary</td><td>only offered when a toolchain is actually found; shares a warmed, persistent build cache across runs</td></tr>
   </table>
 
   <h2>Python</h2>
@@ -110,6 +111,45 @@ const NODE_ROOT = path.dirname(path.dirname(NODE_BIN));</code></pre>
       layers away from the symptom: <code>umask</code> itself was missing
       from the seccomp allowlist. See <a href="architecture">Architecture</a>
       for the full story.
+    </p>
+  </div>
+
+  <h2>Go</h2>
+  <p>
+    The second compiled language, and only registered at all when
+    <code>go env GOROOT</code> actually resolves to something &mdash; the
+    same "don't assume, resolve" approach Node's binary path already uses,
+    extended to an entire language. Clone the repo without Go installed
+    and <code>go</code> simply isn't in the language list; nothing breaks,
+    nothing silently fails at request time.
+  </p>
+  <p>
+    <code>go build</code> runs with <code>GOMAXPROCS=2</code> and
+    <code>GOFLAGS=-p=2</code> to keep its own parallel compilation within
+    the compile sandbox's process-count ceiling, and
+    <code>CGO_ENABLED=0</code> so networking code compiles against Go's own
+    pure-Go resolver instead of shelling out to <code>gcc</code> for cgo.
+  </p>
+  <div class="callout">
+    <span class="callout-label">Why Go needs a real build cache and C doesn't</span>
+    <p>
+      <code>gcc</code> links against a precompiled system libc; it never
+      recompiles it. Go's own toolchain, on a truly empty
+      <code>GOCACHE</code>, compiles the entire standard library from
+      source the first time anything imports it &mdash; and every sandboxed
+      run starts with an empty, private tmpfs, so without intervention
+      that would happen on <em>every single run</em>. It surfaced
+      immediately as two different failures: the compiler's own thread
+      pool hit the compile sandbox's <code>pids.max</code>, and past that,
+      an intermediate archive for the <code>runtime</code> package alone
+      exceeded the file-size ulimit. The fix is a real, persistent,
+      writable <code>GOCACHE</code> (<code>data/go-cache/</code>, shared
+      across every run) warmed once with a trivial program
+      <em>outside</em> the sandbox entirely, before any guest code ever
+      runs. Every real compile after that only has its own small package
+      left to build &mdash; the same "hello world" went from failing on a
+      cold cache to a 14&nbsp;ms <code>ok</code> once it was warm, same
+      limits, nothing else changed.
     </p>
   </div>
 

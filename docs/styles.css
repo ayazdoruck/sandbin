@@ -1,0 +1,291 @@
+:root {
+  --bg: #ffffff;
+  --fg: #111111;
+  --muted: #6b6b6b;
+  --border: #dddddd;
+  --code-bg: #f7f7f7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+a {
+  color: var(--fg);
+}
+
+a:not(.no-underline) {
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  text-decoration-color: var(--fg);
+}
+
+.topbar {
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-inner {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.topbar .brand {
+  font-weight: 600;
+  font-size: 15px;
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+
+.topbar nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+
+.topbar nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.topbar nav a:hover,
+.topbar nav a[aria-current="page"] {
+  color: var(--fg);
+}
+
+.topbar nav a[aria-current="page"] {
+  border-bottom: 1px solid var(--fg);
+}
+
+main {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 48px 24px 96px;
+}
+
+main > .lede {
+  color: var(--muted);
+  margin: -8px 0 40px;
+  max-width: 56ch;
+}
+
+h1 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+
+h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 48px 0 16px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+main > h2:first-of-type {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 28px 0 10px;
+}
+
+p {
+  margin: 0 0 16px;
+}
+
+ul, ol {
+  margin: 0 0 16px;
+  padding-left: 22px;
+}
+
+li {
+  margin-bottom: 6px;
+}
+
+code {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 1px 5px;
+  font-size: 0.95em;
+}
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0 0 20px;
+  line-height: 1.55;
+}
+
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 24px;
+  font-size: 13px;
+}
+
+th, td {
+  text-align: left;
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.callout {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg);
+  padding: 12px 16px;
+  margin: 0 0 20px;
+}
+
+.callout p:last-child {
+  margin-bottom: 0;
+}
+
+.callout-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.grid-cols-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  padding: 16px;
+}
+
+.card h3 {
+  margin-top: 0;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 20px;
+  margin: 0 0 20px;
+}
+
+.kv dt {
+  color: var(--muted);
+}
+
+.kv dd {
+  margin: 0;
+}
+
+.result-block {
+  border: 1px solid var(--border);
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 20px;
+  white-space: pre-wrap;
+}
+
+.page-nav {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 56px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.page-nav a {
+  text-decoration: none;
+  color: var(--muted);
+}
+
+.page-nav a:hover {
+  color: var(--fg);
+}
+
+.page-nav .next {
+  text-align: right;
+}
+
+.page-nav .dir {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+footer {
+  border-top: 1px solid var(--border);
+}
+
+.footer-inner {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+footer a {
+  color: var(--muted);
+}
+
+@media (max-width: 600px) {
+  .grid-cols-2 {
+    grid-template-columns: 1fr;
+  }
+  .topbar-inner, main, .footer-inner {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}

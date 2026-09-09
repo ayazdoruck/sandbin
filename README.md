@@ -11,6 +11,10 @@ dies, and the host doesn't notice.
 
 Cold start is about **20 ms**, and the whole thing runs as an ordinary user.
 
+**[Read the docs →](https://ayazdoruck.github.io/sandbin/)** — architecture,
+API reference, per-language notes, and the real bugs found building this,
+written up in full.
+
 ## Why not Docker
 
 Docker needs a daemon, root or rootless plumbing, and image pulls, and costs

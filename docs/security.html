@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security · sandbin docs</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">sandbin</a>
+    <nav>
+      <a href="index.html">overview</a>
+      <a href="architecture.html">architecture</a>
+      <a href="api.html">api</a>
+      <a href="languages.html">languages</a>
+      <a href="security.html" aria-current="page">security</a>
+      <a href="testing.html">testing</a>
+    </nav>
+  </div>
+</div>
+
+<main>
+  <h1>Security</h1>
+  <p class="lede">A threat model stated plainly, what's actually denied and why, and every real bug this project's own development surfaced &mdash; not a curated highlight reel.</p>
+
+  <h2>Threat model</h2>
+  <p>
+    sandbin hardens against careless or mildly malicious code: infinite
+    loops, fork bombs, memory bombs, attempts to read the host filesystem or
+    reach the network, attempts to escalate via a nested namespace. It does
+    <strong>not</strong> defend against an attacker who already has a kernel
+    exploit. Guest and host share one kernel; seccomp shrinks the reachable
+    syscall surface, it does not add a second kernel between them the way a
+    VM-based sandbox (Firecracker, gVisor) would.
+  </p>
+  <p>
+    That's a deliberate trade, not an oversight: skipping a second kernel is
+    exactly what buys the ~20&nbsp;ms cold start. A workload that needs to
+    withstand a kernel 0-day belongs behind a VM boundary in addition to
+    this, not instead of it.
+  </p>
+
+  <h2>What's denied, and why</h2>
+  <table>
+    <tr><th>Denied</th><th>Because</th></tr>
+    <tr><td><code>ptrace</code></td><td>tracing sibling processes, classic debugger-based escape primitive</td></tr>
+    <tr><td><code>mount</code>, <code>umount2</code>, <code>pivot_root</code>, <code>chroot</code></td><td>filesystem namespace tampering</td></tr>
+    <tr><td><code>unshare</code>, <code>setns</code></td><td>joining or creating namespaces after the sandbox is already set up</td></tr>
+    <tr><td><code>clone</code> with <code>CLONE_NEWUSER</code>/etc.</td><td>nested "privileged inside" namespace from an unprivileged process &mdash; see <a href="architecture.html">Architecture</a> for the exact mechanism</td></tr>
+    <tr><td>all <code>socket()</code>-family calls</td><td>no network, full stop &mdash; namespace isolation already removes any interface, seccomp removes the syscalls too</td></tr>
+    <tr><td><code>io_uring_setup</code>/<code>_enter</code>/<code>_register</code></td><td>a large, historically exploit-prone modern kernel surface</td></tr>
+    <tr><td><code>bpf</code>, <code>perf_event_open</code></td><td>kernel introspection and historically exploitable verifiers</td></tr>
+    <tr><td><code>userfaultfd</code></td><td>userspace page-fault handling, used in real-world kernel race-condition exploits for heap grooming</td></tr>
+    <tr><td><code>reboot</code>, <code>kexec_load</code>, <code>init_module</code>, <code>delete_module</code></td><td>obviously host-level operations</td></tr>
+    <tr><td><code>keyctl</code>, <code>add_key</code>, <code>request_key</code></td><td>kernel keyring, unrelated attack surface with no legitimate use here</td></tr>
+    <tr><td><code>personality</code>, <code>modify_ldt</code>, <code>iopl</code>, <code>ioperm</code></td><td>ASLR manipulation and raw I/O port access, both exploit-primitive-adjacent</td></tr>
+  </table>
+  <p>
+    Everything above is denied <em>by omission</em> &mdash; the filter is an
+    allowlist of ~142 syscalls a Python, Bash, Node or C program legitimately
+    needs, not a blocklist of these specific names. Nothing on this list, or
+    anything not on the allow side, gets a second thought.
+  </p>
+
+  <h2>Known limitations</h2>
+  <div class="callout">
+    <span class="callout-label">Memory spikes can occasionally slip through</span>
+    <p>
+      cgroup v2's <code>memory.max</code> attempts reclaim before escalating
+      to an OOM kill. A spike large enough to exceed the limit but brief
+      enough to finish and free itself before that escalation completes can
+      legitimately avoid ever being killed. This is a kernel characteristic,
+      not a sandbin gap, and it applies equally to every language &mdash; a
+      <em>sustained</em> excess (allocate, hold, keep running) is always
+      caught. Found via a real test: the same C allocation caught reliably
+      with a trailing <code>sleep(3)</code>, and slipped through without it.
+    </p>
+  </div>
+
+  <h2>Bugs found building this</h2>
+  <p>
+    Every one of these was found by actually running adversarial code and
+    checking observable evidence &mdash; cgroup counters, host-side file
+    checks, wall-clock timing, the specific errno a syscall returned &mdash;
+    not by reading the source and reasoning it was probably fine.
+  </p>
+
+  <h3>Cgroup PID assignment race</h3>
+  <p>
+    An early optimization moved a process into its cgroup from the
+    supervisor, asynchronously, after <code>spawn()</code> returned. There
+    was no ordering guarantee against the child's own <code>exec</code>
+    sequence &mdash; the guest could start running, and even fork
+    descendants, before ever landing in the cgroup meant to constrain it,
+    silently disabling every resource limit for that run. Fixed by restoring
+    self-migration as the guaranteed-first line the child executes, with an
+    explicit sentinel exit code on failure instead of a swallowed error.
+  </p>
+
+  <h3>The supervisor could hang</h3>
+  <p>
+    A stuck CI run surfaced a real gap: if a descendant process kept the
+    guest's stdio pipes open, the supervisor's promise never resolved,
+    no matter what the wall-clock deadline said. <code>run()</code> now
+    settles within <code>wallClockMs&nbsp;+&nbsp;2s</code> unconditionally,
+    backstopped by a hard timer independent of whether the pipes ever
+    actually close.
+  </p>
+
+  <h3>Two separate CI-environment cgroup failures</h3>
+  <p>
+    Getting the adversarial suite green on a real GitHub Actions runner,
+    rather than just locally, surfaced Ubuntu 24.04's AppArmor restriction
+    on unprivileged user namespaces, and separately a cgroup hierarchy where
+    the job's own cgroup already held resident processes &mdash; violating
+    cgroup v2's rule against enabling delegation on an occupied cgroup. See
+    <a href="architecture.html">Architecture</a> for how the fix generalizes
+    instead of special-casing one CI provider.
+  </p>
+
+  <h3><code>umask</code> and <code>getsockopt</code>/<code>getsockname</code></h3>
+  <p>
+    Adding Node and C surfaced both in one session: a missing benign syscall
+    (<code>umask</code>) silently broke file permissions on a compiled
+    binary three layers downstream, and two other denied-by-omission
+    syscalls silently broke Node's own stdout detection rather than erroring
+    visibly. Full details on <a href="languages.html">Languages</a> and
+    <a href="architecture.html">Architecture</a>.
+  </p>
+
+  <h3>The frontend hid correct behavior as a bug</h3>
+  <p>
+    Actually clicking through the UI in a browser &mdash; not just trusting
+    the API-level test suite &mdash; found that a run finishing before the
+    WebSocket handshake completes (routine, given ~20&nbsp;ms cold starts)
+    correctly replays a single buffered result with no live <code>chunk</code>
+    events, exactly as designed; the frontend simply never rendered that
+    buffered output. The API was right. The UI built on top of a correct API
+    was still wrong.
+  </p>
+
+  <div class="page-nav">
+    <a class="prev" href="languages.html"><span class="dir">Previous</span>&larr; Languages</a>
+    <a class="next" href="testing.html"><span class="dir">Next</span>Testing &rarr;</a>
+  </div>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <span>MIT licensed</span>
+    <a href="https://github.com/ayazdoruck/sandbin">github.com/ayazdoruck/sandbin</a>
+  </div>
+</footer>
+
+</body>
+</html>

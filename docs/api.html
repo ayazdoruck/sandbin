@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API · sandbin docs</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">sandbin</a>
+    <nav>
+      <a href="index.html">overview</a>
+      <a href="architecture.html">architecture</a>
+      <a href="api.html" aria-current="page">api</a>
+      <a href="languages.html">languages</a>
+      <a href="security.html">security</a>
+      <a href="testing.html">testing</a>
+    </nav>
+  </div>
+</div>
+
+<main>
+  <h1>API</h1>
+  <p class="lede">One HTTP endpoint to submit a run, one WebSocket to watch it happen. <code>npm start</code> serves both on <code>PORT</code> (default 8080).</p>
+
+  <h2>Submit a run</h2>
+  <p><code>POST /runs</code> queues a job and returns immediately &mdash; it never blocks waiting for the run to finish:</p>
+  <pre><code>curl -s -X POST localhost:8080/runs \
+  -H 'content-type: application/json' \
+  -d '{"language":"python","code":"print(1+1)"}'
+
+# -&gt; {"accepted":true,"runId":"...","position":0}</code></pre>
+
+  <table>
+    <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+    <tr><td><code>language</code></td><td>string</td><td><code>python</code>, <code>bash</code>, <code>node</code> or <code>c</code></td></tr>
+    <tr><td><code>code</code></td><td>string</td><td>source to run</td></tr>
+    <tr><td><code>stdin</code></td><td>string</td><td>optional, written before the guest starts reading</td></tr>
+    <tr><td><code>limits</code></td><td>object</td><td>optional overrides &mdash; <code>memoryBytes</code>, <code>cpuPercent</code>, <code>wallClockMs</code>, <code>pids</code>, and others</td></tr>
+  </table>
+
+  <p>
+    A rejection has the same response shape with <code>accepted: false</code>
+    and no <code>runId</code>: HTTP <strong>429</strong> for
+    <code>queue_full</code> or <code>key_limit</code>, <strong>400</strong>
+    for a malformed request (unknown language, missing code). The
+    submitter's <code>key</code> for per-key concurrency limiting is the
+    <code>X-Sandbin-Key</code> header if present, otherwise their IP.
+  </p>
+
+  <h2>Watch it stream</h2>
+  <p>
+    <code>GET /runs/:runId/stream</code>, upgraded to a WebSocket, delivers
+    the run's story as one JSON message per frame:
+  </p>
+  <pre><code>{ "type": "queued", "position": 2 }
+{ "type": "started" }
+{ "type": "chunk", "stream": "stdout", "text": "2\n" }
+{ "type": "finished", "result": { "verdict": "ok", "stdout": "2\n", ... } }</code></pre>
+
+  <table>
+    <tr><th>Type</th><th>When</th></tr>
+    <tr><td><code>queued</code></td><td>connected before the run left the queue &mdash; carries its position</td></tr>
+    <tr><td><code>started</code></td><td>the sandbox actually spawned; any buffered stdin can now be sent</td></tr>
+    <tr><td><code>chunk</code></td><td>a piece of stdout or stderr, as it's produced &mdash; not buffered until exit</td></tr>
+    <tr><td><code>finished</code></td><td>terminal message: full <code>result</code> object, socket closes after</td></tr>
+    <tr><td><code>error</code></td><td>e.g. connecting to an unknown <code>runId</code></td></tr>
+  </table>
+
+  <p>
+    Connecting mid-run replays every chunk seen so far before continuing
+    live. Connecting after the run has already finished &mdash; routine,
+    given ~20&nbsp;ms cold starts racing a WebSocket handshake &mdash;
+    replays just the final <code>finished</code> message and closes. Either
+    way the client sees the same story; it's the buffering that changes,
+    never the guarantee.
+  </p>
+
+  <h2>Interactive stdin</h2>
+  <p>
+    Sending <code>{ "type": "stdin", "text": "..." }</code> over the socket
+    writes to the guest's stdin while it's still running &mdash; this is
+    what makes a real, blocking <code>input()</code> call work, not just a
+    fixed string supplied up front. <code>{ "type": "stdin_close" }</code>
+    sends EOF.
+  </p>
+
+  <h2>Verdicts</h2>
+  <table>
+    <tr><th>Verdict</th><th>Meaning</th></tr>
+    <tr><td><code>ok</code></td><td>exited zero</td></tr>
+    <tr><td><code>error</code></td><td>exited nonzero, or crashed</td></tr>
+    <tr><td><code>timeout</code></td><td>hit <code>wallClockMs</code></td></tr>
+    <tr><td><code>memory_limit</code></td><td>cgroup OOM-killed it</td></tr>
+    <tr><td><code>output_limit</code></td><td>stdout+stderr exceeded the buffer cap</td></tr>
+    <tr><td><code>killed</code></td><td>the supervisor's own hard backstop fired</td></tr>
+    <tr><td><code>compile_error</code></td><td><code>c</code> only &mdash; compilation itself failed; <code>stderr</code> is the compiler's diagnostic</td></tr>
+    <tr><td><code>setup_failed</code></td><td>cgroup assignment failed &mdash; reported, never silently ignored</td></tr>
+  </table>
+  <p>Every result also carries <code>cpuMs</code>, <code>peakBytes</code>, <code>oomKills</code> and <code>pidsMaxHits</code>, read straight from the cgroup.</p>
+
+  <h2>Backpressure</h2>
+  <p>
+    Submissions queue behind a bounded worker pool
+    (<code>maxConcurrency</code>) with a capped backlog
+    (<code>maxQueueLength</code>) and a per-key concurrency limit
+    (<code>maxPerKey</code>). Once either cap is hit, <code>POST /runs</code>
+    rejects immediately rather than accepting unbounded work or shrinking
+    every run's resource limits to compensate.
+  </p>
+
+  <div class="page-nav">
+    <a class="prev" href="architecture.html"><span class="dir">Previous</span>&larr; Architecture</a>
+    <a class="next" href="languages.html"><span class="dir">Next</span>Languages &rarr;</a>
+  </div>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <span>MIT licensed</span>
+    <a href="https://github.com/ayazdoruck/sandbin">github.com/ayazdoruck/sandbin</a>
+  </div>
+</footer>
+
+</body>
+</html>

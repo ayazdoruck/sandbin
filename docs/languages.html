@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Languages · sandbin docs</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">sandbin</a>
+    <nav>
+      <a href="index.html">overview</a>
+      <a href="architecture.html">architecture</a>
+      <a href="api.html">api</a>
+      <a href="languages.html" aria-current="page">languages</a>
+      <a href="security.html">security</a>
+      <a href="testing.html">testing</a>
+    </nav>
+  </div>
+</div>
+
+<main>
+  <h1>Languages</h1>
+  <p class="lede">Two interpreters, one runtime with its binary in an unusual place, and one compiled language &mdash; enough to prove the design isn't interpreter-only.</p>
+
+  <table>
+    <tr><th>Language</th><th>Runs as</th><th>Notable</th></tr>
+    <tr><td><code>python</code></td><td><code>python3 -I -B -u</code></td><td>isolated mode, no bytecode cache, unbuffered</td></tr>
+    <tr><td><code>bash</code></td><td><code>bash --noprofile --norc</code></td><td>no startup files read</td></tr>
+    <tr><td><code>node</code></td><td>the exact node binary running sandbin itself</td><td>resolved at startup, not assumed to live in <code>/usr</code></td></tr>
+    <tr><td><code>c</code></td><td><code>gcc</code>, then the resulting binary</td><td>two separate sandboxed invocations, not one</td></tr>
+  </table>
+
+  <h2>Python</h2>
+  <p>
+    Runs with <code>-u</code> for unbuffered stdout/stderr. Without it,
+    CPython fully buffers output whenever it isn't attached to a TTY &mdash;
+    which it never is here &mdash; so several <code>print()</code> calls
+    would arrive as one lump at process exit instead of streaming live. This
+    was caught by asserting on the actual wall-clock gaps between chunk
+    arrivals in the WebSocket test, not by reading the code: three prints
+    separated by real sleeps showed up as a single chunk until the flag was
+    added.
+  </p>
+
+  <h2>Bash</h2>
+  <p>
+    Plain <code>bash</code>, no profile or rc files. Bash's own builtins
+    write directly via <code>write()</code> without extra userspace
+    buffering, so it streams correctly without needing an equivalent flag.
+  </p>
+
+  <h2>Node.js</h2>
+  <p>
+    A node install rarely lives in a fixed, predictable place &mdash;
+    <code>mise</code>, <code>nvm</code>, a CI tool-cache directory and
+    <code>/usr/bin</code> all put it somewhere different. Rather than assume
+    one, sandbin resolves it once at startup from the interpreter already
+    running its own server code:
+  </p>
+  <pre><code>const NODE_BIN = realpathSync(process.execPath);
+const NODE_ROOT = path.dirname(path.dirname(NODE_BIN));</code></pre>
+  <p>
+    <code>NODE_ROOT</code> is bind-mounted read-only into the sandbox
+    alongside <code>/usr</code>, and the guest's <code>argv[0]</code> points
+    straight at <code>NODE_BIN</code>. This is portable by construction:
+    wherever sandbin itself is running from is exactly where its sandboxed
+    Node guests run from too.
+  </p>
+
+  <h2>C</h2>
+  <p>
+    The only compiled language, and the only one that needs two sandboxed
+    phases instead of one:
+  </p>
+  <ol>
+    <li><strong>Compile.</strong> <code>gcc -O2 -o /box/a.out /box/main.c</code>
+      runs under its own, more permissive resource profile &mdash; 256&nbsp;MB
+      and 10&nbsp;seconds, since compiling legitimately needs more of both
+      than running a typical script does.</li>
+    <li><strong>Execute.</strong> Only if compilation exits zero, a second,
+      completely separate sandboxed invocation runs <code>/box/a.out</code>
+      under the caller's normal limits.</li>
+  </ol>
+  <p>
+    A compile failure short-circuits before the execute phase ever starts,
+    returning verdict <code>compile_error</code> with the compiler's own
+    diagnostic as <code>stderr</code>.
+  </p>
+  <p>
+    The compile phase is also the one exception to a rule that holds
+    everywhere else in sandbin: its <code>/box</code> is mounted read-write
+    (<code>--bind</code>, not <code>--ro-bind</code>), because <code>gcc</code>
+    has to write <code>a.out</code> somewhere. Every execute-phase mount, for
+    every language including C's own second phase, stays read-only.
+  </p>
+  <div class="callout">
+    <span class="callout-label">What actually broke</span>
+    <p>
+      Compiling worked on the first real test; running the result didn't
+      &mdash; <code>a.out</code> came out of the sandbox at file mode
+      <code>644</code> instead of <code>755</code>. The cause was three
+      layers away from the symptom: <code>umask</code> itself was missing
+      from the seccomp allowlist. See <a href="architecture.html">Architecture</a>
+      for the full story.
+    </p>
+  </div>
+
+  <div class="page-nav">
+    <a class="prev" href="api.html"><span class="dir">Previous</span>&larr; API</a>
+    <a class="next" href="security.html"><span class="dir">Next</span>Security &rarr;</a>
+  </div>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <span>MIT licensed</span>
+    <a href="https://github.com/ayazdoruck/sandbin">github.com/ayazdoruck/sandbin</a>
+  </div>
+</footer>
+
+</body>
+</html>

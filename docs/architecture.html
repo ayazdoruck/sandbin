@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture · sandbin docs</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">sandbin</a>
+    <nav>
+      <a href="index.html">overview</a>
+      <a href="architecture.html" aria-current="page">architecture</a>
+      <a href="api.html">api</a>
+      <a href="languages.html">languages</a>
+      <a href="security.html">security</a>
+      <a href="testing.html">testing</a>
+    </nav>
+  </div>
+</div>
+
+<main>
+  <h1>Architecture</h1>
+  <p class="lede">Four independent layers wrap every run. Each one is enough to stop a different class of misbehavior; together, no single bug in any one of them is an escape.</p>
+
+  <h2>Namespaces</h2>
+  <p>
+    Every run gets its own <code>bwrap</code> invocation with
+    <code>--unshare-all</code>: fresh PID, network, mount, IPC, UTS and user
+    namespaces, plus a private tmpfs root. The guest sees no host files
+    (aside from a read-only <code>/usr</code> it needs to run at all), no
+    host processes, and no network interface &mdash; not even loopback.
+  </p>
+  <p>
+    One detail matters more than it looks: <strong>the guest is PID&nbsp;1 in
+    its own namespace.</strong> When it exits, the kernel reaps everything it
+    spawned along with it. A classic fork bomb dies in about 15&nbsp;ms
+    without the process-count ceiling ever being touched &mdash; the
+    namespace itself is what kills it.
+  </p>
+
+  <h2>Seccomp</h2>
+  <p>
+    Namespaces stop a guest from reaching the host's files, network and
+    processes. They do nothing about a guest reaching the <em>kernel</em>
+    through a syscall the kernel itself mishandles. Seccomp is the layer that
+    shrinks that surface.
+  </p>
+  <p>
+    The filter is a strict allowlist &mdash; default <code>ERRNO(EPERM)</code>,
+    142 syscalls explicitly permitted &mdash; not a blocklist of known-bad
+    calls. It's compiled from <code>seccomp/policy.c</code> via libseccomp on
+    first use and cached as raw BPF, then handed to bubblewrap through
+    <code>--seccomp FD</code>.
+  </p>
+
+  <h3>The clone problem</h3>
+  <p>
+    <code>clone()</code> has to stay allowed for ordinary fork and thread
+    use, but an unprivileged guest can call it with
+    <code>CLONE_NEWUSER</code> and friends to create a fresh, nested
+    namespace it would be "privileged" inside &mdash; a real
+    privilege-escalation path from inside an already-sandboxed process.
+    Denying <code>clone</code> outright breaks every interpreter's threading
+    and forking. The fix is a single masked-equality rule:
+  </p>
+  <pre><code>allow clone WHEN (flags &amp; DANGEROUS_MASK) == 0</code></pre>
+  <p>
+    where <code>DANGEROUS_MASK</code> is the OR of
+    <code>CLONE_NEWUSER</code>/<code>NEWNS</code>/<code>NEWPID</code>/<code>NEWNET</code>/<code>NEWUTS</code>/<code>NEWIPC</code>/<code>NEWCGROUP</code>.
+    Ordinary fork/thread calls carry none of those bits and pass; anything
+    requesting a new namespace falls through to the filter's default deny.
+    Verified against the raw syscall directly, not just the libc wrapper: a
+    <code>clone()</code> call with <code>CLONE_NEWUSER</code> fails with
+    <code>EPERM</code> even when it bypasses <code>unshare()</code> entirely.
+  </p>
+  <p>
+    <code>clone3</code> is denied too, but specifically with
+    <code>ENOSYS</code> rather than <code>EPERM</code> &mdash; glibc treats
+    <code>ENOSYS</code> from <code>clone3</code> as "kernel doesn't support
+    this" and transparently falls back to <code>clone()</code>. Returning
+    <code>EPERM</code> instead skips that fallback and aborts the program
+    outright, which very nearly shipped as a bug here.
+  </p>
+
+  <h3>Two findings that weren't obvious from reading the policy</h3>
+  <p>
+    Both surfaced only once real language runtimes ran inside the sandbox,
+    not from auditing the syscall list itself:
+  </p>
+  <ul>
+    <li><code>umask</code> was missing entirely &mdash; an oversight, not a
+      deliberate exclusion. With it denied, <code>gcc</code>/<code>ld</code>
+      produced executables at mode <code>644</code> instead of <code>755</code>,
+      and execution then failed with a plain permission error three layers
+      away from the actual cause.</li>
+    <li><code>getsockopt</code>/<code>getsockname</code> were denied as part
+      of blocking the whole socket family. Node's libuv probes any stdio fd
+      with both to tell a pipe from a socket from a TTY, regardless of what
+      it actually is; with both blocked it silently misdetected the stream
+      and dropped every write, producing a clean exit code with no output at
+      all. They're allowed now &mdash; they only read metadata on an fd the
+      guest already holds. <code>socket()</code> itself, which would create a
+      new one, stays fully denied.</li>
+  </ul>
+  <p>See <a href="security.html">Security</a> for the full list of what's denied and why.</p>
+
+  <h3>Compat architectures</h3>
+  <p>
+    The filter covers the native x86_64 syscall table plus the 32-bit and
+    x32 compat ABIs. Filtering only the native table is a well-known bypass
+    class: a 64-bit binary can still reach the kernel through the 32-bit
+    entry point, with a completely different syscall numbering, unless the
+    filter explicitly covers it too.
+  </p>
+
+  <h2>cgroup v2</h2>
+  <p>
+    Every run gets its own cgroup with <code>memory.max</code>,
+    <code>cpu.max</code> and <code>pids.max</code> set before the guest
+    process ever starts. Teardown is a single write to
+    <code>cgroup.kill</code>, which takes down the whole tree at once &mdash;
+    no PID chasing, no process surviving the reaper.
+  </p>
+
+  <h3>Finding a place to put the cgroup</h3>
+  <p>
+    Delegating cgroup control to an unprivileged process is exactly what
+    breaks first when this runs somewhere other than a desktop login
+    session, and it broke in two different, real ways getting sandbin's own
+    CI green:
+  </p>
+  <ol>
+    <li><strong>AppArmor.</strong> Ubuntu 24.04 restricts unprivileged user
+      namespace creation by default. <code>bwrap --unshare-all</code> failed
+      silently under it until CI explicitly disabled the restriction.</li>
+    <li><strong>Cgroup topology.</strong> A GitHub Actions job's own cgroup
+      lives under <code>system.slice</code>, not the
+      <code>user.slice</code> session hierarchy a desktop assumes &mdash;
+      and worse, that cgroup already holds resident processes. cgroup v2
+      refuses to enable <code>cgroup.subtree_control</code> (delegating
+      resource control to children) on a cgroup that still holds processes
+      directly: the "no internal process" constraint.</li>
+  </ol>
+  <p>
+    The fix generalizes rather than hardcodes a path. At startup, sandbin
+    reads its own <code>/proc/self/cgroup</code> and walks <em>upward</em>
+    until it finds an ancestor that both exposes
+    <code>cpu</code>/<code>memory</code>/<code>pids</code> and is either
+    already delegated or holds no processes of its own:
+  </p>
+  <pre><code>function canHostDelegation(dir):
+    return hasAllControllers(dir)
+       and (alreadyEnabled(dir) or isProcessFree(dir))
+
+function findDelegatedRoot():
+    dir = ownCgroupPath()
+    while dir is not filesystem root:
+        if canHostDelegation(dir): return dir
+        dir = parent(dir)
+    return ownCgroupPath()  // fails loudly downstream instead</code></pre>
+  <p>
+    It never moves another process into a different cgroup to force a level
+    to qualify &mdash; a session's cgroup might hold entirely unrelated
+    processes, and relocating them as a side effect of starting a sandbox
+    run is not something this code should ever do. If no ancestor qualifies,
+    cgroup assignment fails loudly with the <code>setup_failed</code> verdict
+    instead of silently running the guest unconfined.
+  </p>
+
+  <h2>rlimits</h2>
+  <p>
+    Applied via the shell wrapper before <code>bwrap</code> ever execs:
+    <code>ulimit -f</code> caps file size, <code>ulimit -n</code> caps open
+    descriptors, <code>ulimit -c 0</code> disables core dumps. These catch
+    what cgroups don't &mdash; a single huge file write, or a crash dump
+    that would otherwise land on disk.
+  </p>
+
+  <h2>The supervisor's own guarantee</h2>
+  <p>
+    <code>run()</code> always settles within <code>wallClockMs&nbsp;+&nbsp;2s</code>,
+    regardless of what the guest or its descendants do. The wall-clock
+    deadline itself triggers <code>cgroup.kill</code>; the extra two seconds
+    are a hard backstop that force-closes the process and its pipes if
+    something downstream is still holding them open. A misbehaving
+    submission can slow the supervisor down, never wedge it indefinitely.
+  </p>
+
+  <div class="page-nav">
+    <a class="prev" href="index.html"><span class="dir">Previous</span>&larr; Overview</a>
+    <a class="next" href="api.html"><span class="dir">Next</span>API &rarr;</a>
+  </div>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <span>MIT licensed</span>
+    <a href="https://github.com/ayazdoruck/sandbin">github.com/ayazdoruck/sandbin</a>
+  </div>
+</footer>
+
+</body>
+</html>

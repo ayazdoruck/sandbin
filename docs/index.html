@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sandbin docs</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">sandbin</a>
+    <nav>
+      <a href="index.html" aria-current="page">overview</a>
+      <a href="architecture.html">architecture</a>
+      <a href="api.html">api</a>
+      <a href="languages.html">languages</a>
+      <a href="security.html">security</a>
+      <a href="testing.html">testing</a>
+    </nav>
+  </div>
+</div>
+
+<main>
+  <h1>sandbin</h1>
+  <p class="lede">Runs untrusted code and survives it. No Docker, no root, no VM.</p>
+
+  <p>
+    A submission gets its own PID namespace, its own network stack (empty), its
+    own filesystem view, a syscall allowlist, and hard ceilings on memory, CPU
+    and process count. When it misbehaves &mdash; and the test suite makes sure
+    it does &mdash; it dies, and the host doesn't notice.
+  </p>
+
+  <p>
+    Cold start is about <strong>20&nbsp;ms</strong>, and the whole thing runs
+    as an ordinary user.
+  </p>
+
+  <h2>Why not Docker</h2>
+  <p>
+    Docker needs a daemon, root or rootless plumbing, and image pulls, and
+    costs hundreds of milliseconds per container. Everything sandbin needs is
+    already in the kernel: namespaces, cgroup&nbsp;v2, seccomp and rlimits.
+    Skipping the container runtime is what buys the 20&nbsp;ms start and lets
+    the same code run somewhere as small as a phone.
+  </p>
+
+  <h2>How it's contained</h2>
+  <p>Four independent layers, so no single bug is an escape:</p>
+  <table>
+    <tr><th>Layer</th><th>Enforces</th></tr>
+    <tr><td>Namespaces</td><td>No network, no host filesystem, no host processes, private tmpfs root</td></tr>
+    <tr><td>Seccomp</td><td>142-syscall allowlist &mdash; everything not explicitly needed is denied</td></tr>
+    <tr><td>cgroup&nbsp;v2</td><td><code>memory.max</code>, <code>cpu.max</code>, <code>pids.max</code>, <code>cgroup.kill</code> teardown</td></tr>
+    <tr><td>rlimits</td><td>File size, open descriptors, no core dumps</td></tr>
+  </table>
+  <p>Plus a wall-clock deadline enforced by the supervisor itself &mdash; every run settles within its limit plus a 2&nbsp;second hard backstop, no matter what the guest does.</p>
+
+  <h2>What's built</h2>
+  <div class="grid-cols-2">
+    <div class="card">
+      <h3><a href="architecture.html" class="no-underline">Architecture &rarr;</a></h3>
+      <p>How the four layers actually work together: the cgroup delegation walk, the seccomp policy's clone-flag trick, the hard-timeout backstop.</p>
+    </div>
+    <div class="card">
+      <h3><a href="api.html" class="no-underline">API &rarr;</a></h3>
+      <p>HTTP endpoint to submit a run, WebSocket protocol to watch it stream &mdash; message types, verdicts, interactive stdin.</p>
+    </div>
+    <div class="card">
+      <h3><a href="languages.html" class="no-underline">Languages &rarr;</a></h3>
+      <p>Python, Bash, Node.js and C. How a compiled language gets sandboxed twice &mdash; once to build, once to run.</p>
+    </div>
+    <div class="card">
+      <h3><a href="security.html" class="no-underline">Security &rarr;</a></h3>
+      <p>The threat model, stated plainly, and the real bugs found by actually running code &mdash; not just reading it.</p>
+    </div>
+  </div>
+
+  <h2>Try it</h2>
+  <pre><code>git clone https://github.com/ayazdoruck/sandbin.git
+cd sandbin
+npm install
+npm start</code></pre>
+  <p>Opens a black-and-white playground at <code>localhost:8080</code> &mdash; pick a language, write code, run, watch it stream.</p>
+
+  <div class="page-nav">
+    <span></span>
+    <a class="next" href="architecture.html"><span class="dir">Next</span>Architecture &rarr;</a>
+  </div>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <span>MIT licensed</span>
+    <a href="https://github.com/ayazdoruck/sandbin">github.com/ayazdoruck/sandbin</a>
+  </div>
+</footer>
+
+</body>
+</html>

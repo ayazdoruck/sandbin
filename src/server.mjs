@@ -9,6 +9,7 @@ import { IMAGES } from './sandbox.mjs';
 import { createPermalinkStore } from './permalinks.mjs';
 import { createApiKeyStore } from './apikeys.mjs';
 import { createRateLimiter } from './ratelimit.mjs';
+import { createMetricsStore } from './metrics.mjs';
 
 const CLEANUP_DELAY_MS = 30_000;
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
@@ -24,6 +25,8 @@ const STATIC_ROUTES = {
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
   '/permalink.js': { file: 'permalink.js', type: 'text/javascript; charset=utf-8' },
+  '/metrics': { file: 'metrics.html', type: 'text/html; charset=utf-8' },
+  '/metrics.js': { file: 'metrics.js', type: 'text/javascript; charset=utf-8' },
 };
 
 function readJsonBody(req) {
@@ -63,6 +66,7 @@ export function createServer({
   const apiKeys = createApiKeyStore({ dir: apiKeyDir });
   const rateLimiter = createRateLimiter(rateLimitWindowMs ? { windowMs: rateLimitWindowMs } : {});
   const keyIssuanceLimiter = createRateLimiter(rateLimitWindowMs ? { windowMs: rateLimitWindowMs } : {});
+  const metrics = createMetricsStore();
 
   function broadcast(record, message) {
     const payload = JSON.stringify(message);
@@ -76,8 +80,10 @@ export function createServer({
   }
 
   function submitRun(body, key, rateLimitId, requestsPerHour) {
+    metrics.recordSubmitted();
     const limit = rateLimiter.check(rateLimitId, requestsPerHour);
     if (!limit.allowed) {
+      metrics.recordRejected('rate_limited');
       return {
         accepted: false,
         verdict: 'rate_limited',
@@ -86,9 +92,11 @@ export function createServer({
       };
     }
     if (!IMAGES[body?.language]) {
+      metrics.recordRejected('bad_request');
       return { accepted: false, verdict: 'bad_request', message: `unknown language: ${body?.language}` };
     }
     if (typeof body.code !== 'string') {
+      metrics.recordRejected('bad_request');
       return { accepted: false, verdict: 'bad_request', message: 'code must be a string' };
     }
 
@@ -124,7 +132,11 @@ export function createServer({
       { key }
     );
 
-    if (!ticket.accepted) return { accepted: false, verdict: ticket.verdict };
+    if (!ticket.accepted) {
+      metrics.recordRejected(ticket.verdict);
+      return { accepted: false, verdict: ticket.verdict };
+    }
+    metrics.recordAccepted();
 
     const runId = randomUUID();
     const createdAt = Date.now();
@@ -134,6 +146,7 @@ export function createServer({
     ticket.result.then(async (result) => {
       record.status = 'finished';
       record.result = result;
+      metrics.recordFinished(language, result);
       await permalinks
         .save(runId, { id: runId, language, code, stdin, createdAt, chunks: record.chunks, stats: record.stats, result })
         .catch(() => {});
@@ -257,6 +270,7 @@ export function createServer({
         return;
       }
       apiKeys.issue().then((record) => {
+        metrics.recordKeyIssued();
         res.writeHead(201, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ key: record.key, requestsPerHour: record.requestsPerHour }));
       });
@@ -281,6 +295,12 @@ export function createServer({
           resetAt: usage.resetAt,
         }));
       });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/metrics/data') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ...metrics.snapshot(), queue: queue.stats() }));
       return;
     }
 

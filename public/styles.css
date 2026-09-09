@@ -3,6 +3,7 @@
   --fg: #111111;
   --muted: #6b6b6b;
   --border: #dddddd;
+  --code-bg: #f7f7f7;
 }
 
 * {
@@ -198,6 +199,73 @@ textarea:focus, input[type="text"]:focus, select:focus {
   color: var(--muted);
   font-size: 13px;
   margin-top: 4px;
+}
+
+.metric-section {
+  margin-bottom: 32px;
+}
+
+.metric-section h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  color: var(--fg);
+}
+
+.metric-section dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 20px;
+  margin: 0;
+}
+
+.metric-section dt {
+  color: var(--muted);
+}
+
+.metric-section dd {
+  margin: 0;
+}
+
+.metric-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.metric-label {
+  width: 120px;
+  flex: none;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-bar {
+  flex: 1;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  height: 18px;
+}
+
+.metric-fill {
+  background: var(--fg);
+  height: 100%;
+}
+
+.metric-value {
+  width: 48px;
+  flex: none;
+  text-align: right;
+  font-weight: 600;
+}
+
+.metric-empty {
+  color: var(--muted);
+  font-style: italic;
 }
 
 @media (max-width: 480px) {

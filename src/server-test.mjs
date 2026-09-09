@@ -297,6 +297,40 @@ async function testReconnectAfterFinish() {
   });
 }
 
+async function testMetricsReflectARealFinishedRun() {
+  return withServer({}, async (baseUrl) => {
+    const submit = await post(baseUrl, '/runs', { language: 'python', code: 'print("metered")' });
+    await streamRun(baseUrl, submit.body.runId);
+    const res = await fetch(`${baseUrl}/metrics/data`);
+    const body = await res.json();
+    return {
+      name: 'GET /metrics/data reflects a real finished run, not just a submission',
+      pass:
+        res.status === 200 &&
+        body.submitted >= 1 &&
+        body.accepted >= 1 &&
+        body.finished.total >= 1 &&
+        body.finished.byVerdict.ok >= 1 &&
+        body.finished.byLanguage.python >= 1,
+      detail: JSON.stringify({ submitted: body.submitted, finished: body.finished }),
+    };
+  });
+}
+
+async function testMetricsCountRejectionsAndKeyIssuance() {
+  return withServer({}, async (baseUrl) => {
+    await post(baseUrl, '/runs', { language: 'ruby', code: 'puts 1' });
+    await fetch(`${baseUrl}/keys`, { method: 'POST' });
+    const res = await fetch(`${baseUrl}/metrics/data`);
+    const body = await res.json();
+    return {
+      name: 'GET /metrics/data counts a rejection and a key issuance from real requests',
+      pass: body.rejected.bad_request === 1 && body.keysIssued === 1 && typeof body.queue.running === 'number',
+      detail: JSON.stringify({ rejected: body.rejected, keysIssued: body.keysIssued, queue: body.queue }),
+    };
+  });
+}
+
 async function testUnknownRunIdReturnsError() {
   return withServer({}, async (baseUrl) => {
     const events = await streamRun(baseUrl, 'not-a-real-id');
@@ -325,6 +359,8 @@ const CASES = [
   testBadRequestReturns400,
   testReconnectAfterFinish,
   testUnknownRunIdReturnsError,
+  testMetricsReflectARealFinishedRun,
+  testMetricsCountRejectionsAndKeyIssuance,
 ];
 
 let passed = 0;

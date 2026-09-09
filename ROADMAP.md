@@ -412,3 +412,50 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   case and the compile-error-shows-diagnostic fix above
 - 83/83 tests passing across seven suites (`test:cli`, 10 cases, is new;
   everything else unchanged)
+
+## Phase 12 — `/metrics` dashboard (done)
+
+- a live view of the server process itself: `GET /metrics` (HTML,
+  black-and-white, matching the existing frontend) polls
+  `GET /metrics/data` (JSON) every two seconds and renders submitted /
+  accepted / rejected counts, finished runs broken down by verdict and by
+  language, average duration / CPU / peak memory across finished runs,
+  the live queue's running/waiting depth, and how many API keys have been
+  issued
+- counters live entirely in memory (`src/metrics.mjs`, a handful of plain
+  objects and a `snapshot()` call) and reset on restart — deliberately not
+  persisted, the same "no database" stance the rest of the project already
+  takes for the queue and rate limiter. The one exception, permalinks, is
+  already opt-out-proof and disk-backed for a real reason (a shareable
+  link has to survive the process that created it); a metrics counter
+  answering "how's this instance doing right now" doesn't need to
+  survive a restart to do its job
+- deliberately not a new subsystem bolted alongside the server — every
+  counter increments at a point `server.mjs` was already handling: a
+  submission (`recordSubmitted`), a rejection with its actual verdict
+  (`rate_limited`, `bad_request`, `queue_full`, `key_limit`, whichever
+  `submitRun` was already about to return), an accepted run
+  (`recordAccepted`), a finished run's real result once `ticket.result`
+  resolves (`recordFinished`, verdict + language + duration/cpu/peak from
+  the same object the WebSocket `finished` message already carries), and
+  a successful `POST /keys` (`recordKeyIssued`). The live running/waiting
+  numbers aren't tracked a second time at all — `queue.stats()` already
+  existed (`queue-test.mjs` has exercised it since Phase 2) and is reused
+  as-is rather than duplicating state that would just as easily drift out
+  of sync with the real queue
+- tested at two levels, matching how `apikeys.mjs`/`ratelimit.mjs` are
+  already tested: `metrics-test.mjs` covers the counters in isolation (a
+  fresh store is all zeros, accepted/rejected/finished stay independent
+  and correctly broken down, averages are computed as a real mean rather
+  than accumulated, uptime advances with real wall-clock time) and two
+  cases added to `server-test.mjs` hit `GET /metrics/data` on a real
+  server after real runs and a real rejection, asserting the numbers that
+  come back match what was actually just done — not just that the route
+  returns 200
+- verified in a real browser, not just over the API: started the server,
+  drove several real runs and a rejection through `curl`, loaded
+  `/metrics` and confirmed every section rendered with the right numbers,
+  then submitted one more run and watched the page's own 2-second poll
+  pick it up with no manual reload
+- 91/91 tests passing across eight suites (`test:metrics`, 6 cases, and
+  two new cases in `test:server`; everything else unchanged)

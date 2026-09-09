@@ -230,6 +230,24 @@ enough to plot — fed straight off the `stats` WebSocket messages, nothing
 faked client-side. Every finished run gets a permalink shown right below
 its results, ready to copy and share.
 
+### Metrics dashboard
+
+**`GET /metrics`** is a live dashboard of the server process itself —
+submitted/accepted/rejected counts, finished runs broken down by verdict
+and by language, average duration/CPU/peak memory, current queue depth,
+and API keys issued — polling **`GET /metrics/data`** every two seconds
+for the same JSON it renders from. Counters live in memory
+(`src/metrics.mjs`) and reset on restart, same as everything else in this
+project that isn't explicitly persisted to `data/` — there's no metrics
+database, just counters incremented at the exact points `server.mjs`
+already handles a submission, a rejection, a finished run or an issued
+key, plus `queue.stats()` reused as-is for the live running/waiting
+numbers rather than duplicating that state.
+
+```bash
+curl -s localhost:8080/metrics/data | python3 -m json.tool
+```
+
 ### CLI
 
 ```bash
@@ -367,6 +385,22 @@ clock rather than actually waiting an hour:
 5/5 passed
 ```
 
+`npm run test:metrics` covers the counters directly, no server involved —
+a fresh store starts at zero, accepted/rejected/finished are tallied
+independently and broken down correctly, averages are a real mean rather
+than a running total:
+
+```
+✅ a fresh store reports zero for every counter
+✅ accepted and rejected runs are tallied independently, rejected broken down by verdict
+✅ finished runs are broken down by verdict and by language, not just totaled
+✅ averages are the mean over finished runs, not a running total
+✅ key issuance has its own counter, unaffected by run submissions
+✅ uptimeMs reflects real elapsed wall-clock time, not a fixed value
+
+6/6 passed
+```
+
 `npm run test:server` spins up the real HTTP + WebSocket server on an
 ephemeral port — no mocks — and drives it end to end:
 
@@ -387,8 +421,10 @@ ephemeral port — no mocks — and drives it end to end:
 ✅ unknown language returns 400 immediately             {"accepted":false,"verdict":"bad_request",...}
 ✅ reconnecting after finish replays the final result   finished
 ✅ unknown run id over WS returns an error event        [{"type":"error",...}]
+✅ GET /metrics/data reflects a real finished run, not just a submission
+✅ GET /metrics/data counts a rejection and a key issuance from real requests
 
-16/16 passed
+18/18 passed
 ```
 
 `npm run test:cli` spawns the built binary as a real subprocess, both in
@@ -434,14 +470,14 @@ internals:
 
 ## Status
 
-All eleven roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
+All twelve roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
 a bounded and backpressured job queue, a streaming HTTP + WebSocket API,
 Python/Bash/Node/C support plus Go wherever a toolchain is available, a
 minimal browser frontend with a live resource graph and shareable
-permalinks, API keys with per-tier rate limits, a `sandbin` CLI that runs
-either locally or against a remote server, and CI running all seven test
-suites on every push. `npm start` and open it, or `npm link` and run
-`sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was actually
+permalinks, API keys with per-tier rate limits, a live `/metrics` dashboard,
+a `sandbin` CLI that runs either locally or against a remote server, and CI
+running all eight test suites on every push. `npm start` and open it, or
+`npm link` and run `sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was actually
 found building each phase — several real bugs, not just a feature checklist.
 
 ### Known issues

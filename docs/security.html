@@ -80,7 +80,7 @@
   </table>
   <p>
     Everything above is denied <em>by omission</em> &mdash; the filter is an
-    allowlist of ~142 syscalls a Python, Bash, Node or C program legitimately
+    allowlist of 146 syscalls a Python, Bash, Node or C program legitimately
     needs, not a blocklist of these specific names. Nothing on this list, or
     anything not on the allow side, gets a second thought.
   </p>
@@ -97,6 +97,23 @@
       <em>sustained</em> excess (allocate, hold, keep running) is always
       caught. Found via a real test: the same C allocation caught reliably
       with a trailing <code>sleep(3)</code>, and slipped through without it.
+    </p>
+  </div>
+  <div class="callout">
+    <span class="callout-label">What actually changes on the public internet</span>
+    <p>
+      Anonymous, unauthenticated code execution is the deliberate feature
+      here, not an oversight &mdash; the sandbox is the entire security
+      model for that path. Three things a real deployment still needs to
+      handle itself: this server speaks plain HTTP, so it needs a
+      TLS-terminating reverse proxy in front of it; rate limiting and
+      <code>maxPerKey</code> key off the real socket address, which isn't
+      safe behind a proxy unless that proxy's own real-IP header is both
+      trusted and parsed &mdash; deliberately not done here, since blindly
+      trusting a client-suppliable header would just trade one spoofing
+      vector for another; and a finished run's permalink is unauthenticated
+      by design &mdash; unguessable, not secret, so nothing typed into code
+      or stdin should be either.
     </p>
   </div>
 
@@ -181,6 +198,102 @@
     was still wrong.
   </p>
 
+  <h2>A full control-plane audit</h2>
+  <p>
+    Everything above came from building the sandbox. A separate pass
+    specifically targeted <code>sandbox.mjs</code>, <code>policy.c</code> and
+    <code>server.mjs</code> for sandbox escapes, TOCTOU, leaks, and what
+    changes once this is reachable from the public internet &mdash; the same
+    evidence-not-narration rule, aimed at the parts of the codebase most of
+    the bugs above hadn't touched. Full trail, including everything
+    investigated and found already correct, in
+    <a href="https://github.com/ayazdoruck/sandbin/blob/main/ROADMAP.md#phase-17--a-full-audit-of-the-control-plane-on-request-done">ROADMAP.md</a>.
+  </p>
+
+  <h3>Unauthenticated RCE via a limits field</h3>
+  <p>
+    <code>limits.openFiles</code> was interpolated straight into a shell
+    script (<code>ulimit -n ${lim.openFiles}</code>) with no validation and
+    no escaping. A single <code>POST&nbsp;/runs</code> with
+    <code>limits: { openFiles: "64; touch /tmp/x #" }</code> ran the injected
+    command as the sandbin process itself, before the sandbox even started.
+    Confirmed with a real file appearing on the host from one unauthenticated
+    request. Fixed by clamping every field in <code>limits</code> to a
+    bounded integer before it reaches anywhere &mdash; a cgroup write, a
+    bwrap argument, or a shell script &mdash; with the coercion re-asserted
+    again at the interpolation site itself, not just trusted from upstream.
+  </p>
+
+  <h3>Path traversal via a request header</h3>
+  <p>
+    <code>X-Sandbin-Key</code> reached <code>apiKeys.load()</code>
+    unvalidated. The two routes that read an id from a URL path happened to
+    be safe already, but only because their <code>[^/]+</code> route regex
+    can't capture a literal <code>/</code> &mdash; an accident of routing,
+    not a check &mdash; and a header isn't a URL segment, so the same
+    accident didn't apply to it.
+    <code>X-Sandbin-Key: ../../elsewhere/canary</code> resolved straight to a
+    file outside the key store, confirmed with a real file whose fabricated
+    quota then granted more than the real anonymous rate limit end to end.
+    Fixed with a strict format check, matching exactly what this app itself
+    generates, applied to every route that accepts one of these ids.
+  </p>
+
+  <h3>Five resource leaks, each reproduced before being called a bug</h3>
+  <p>
+    An unbounded rate-limiter <code>Map</code> keyed by attacker-rotatable
+    IPs (confirmed with 200,000 synthetic ids); API keys with no expiry at
+    all (a key backdated five years still loaded at full quota); a cgroup and
+    the guest's own submitted source left on disk whenever
+    <code>spawnInSandbox</code> threw partway through setup; a live stats
+    interval that could outlive the result it was measuring, provable from
+    JavaScript's own microtask-ordering guarantees rather than a flaky
+    end-to-end reproduction; and the Go warm-up cache's scratch directory,
+    never removed &mdash; 254 confirmed leaked on the machine this was found
+    on. All five fixed with <code>try</code>/<code>finally</code> and a
+    periodic <code>sweep()</code>, and all five have a regression test that
+    reproduces the exact leak.
+  </p>
+
+  <h3>An API key's own TTL wasn't checked at the point of use</h3>
+  <p>
+    Fixing the leak above added a 90-day TTL and an hourly
+    <code>sweep()</code> to the key store &mdash; but <code>load()</code>
+    itself never checked a key's age; it just trusted that <code>sweep()</code>
+    had already deleted anything expired. A key just past its TTL kept
+    working, at full quota, for up to an hour after expiring: the gap between
+    a periodic cleanup and the record's own timestamp actually being
+    enforced. Confirmed by backdating a key and loading it with
+    <code>sweep()</code> never once called. Fixed to check inline, matching
+    the pattern the permalink store already used correctly.
+  </p>
+
+  <h3>A timing side-channel in the metrics password check</h3>
+  <p>
+    <code>/metrics</code>'s optional Basic Auth compared the decoded
+    credentials with plain <code>===</code>, which returns as soon as it
+    hits the first mismatched byte &mdash; a real, if slow, remote signal for
+    guessing the password one byte at a time. Fixed with
+    <code>crypto.timingSafeEqual</code>, checking the username and password
+    unconditionally rather than short-circuiting on the username alone.
+  </p>
+
+  <h3>A CSRF-shaped path into <code>POST /runs</code></h3>
+  <p>
+    The request body was parsed as JSON regardless of what
+    <code>Content-Type</code> the request actually declared.
+    <code>application/json</code> forces a browser onto the CORS preflight
+    path &mdash; which this server was already safe against, since it never
+    answers <code>OPTIONS</code> &mdash; but <code>text/plain</code> is
+    CORS-safelisted, no preflight required, and nothing stopped a
+    JSON-shaped body from arriving under that header instead. Confirmed
+    directly: a request with <code>Content-Type: text/plain</code> and a
+    foreign <code>Origin</code> was accepted and queued exactly like a
+    same-origin call. Any page a visitor had open could have silently
+    submitted runs under that visitor's own IP. Fixed by requiring
+    <code>application/json</code> before parsing.
+  </p>
+
   <div class="page-nav">
     <a class="prev" href="benchmarks"><span class="dir">Previous</span>&larr; Benchmarks</a>
     <a class="next" href="testing"><span class="dir">Next</span>Testing &rarr;</a>
@@ -194,5 +307,6 @@
   </div>
 </footer>
 
+<script src="animations.js" defer></script>
 </body>
 </html>

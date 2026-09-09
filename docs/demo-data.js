@@ -2,12 +2,12 @@ const DEMOS = {
   hello: {
     label: 'hello',
     language: 'python',
-    code: 'import time\nprint("booting sandbox...")\ntime.sleep(0.4)\nprint("namespace: isolated")\ntime.sleep(0.3)\nprint("seccomp: 142 syscalls allowed")\ntime.sleep(0.3)\nprint("cgroup: memory=128MB cpu=50%")\ntime.sleep(0.3)\nprint("done.")',
+    code: 'import time\nprint("booting sandbox...")\ntime.sleep(0.4)\nprint("namespace: isolated")\ntime.sleep(0.3)\nprint("seccomp: 146 syscalls allowed")\ntime.sleep(0.3)\nprint("cgroup: memory=128MB cpu=50%")\ntime.sleep(0.3)\nprint("done.")',
     events: [
       { t: 0, type: 'started' },
       { t: 40, type: 'chunk', stream: 'stdout', text: 'booting sandbox...\n' },
       { t: 440, type: 'chunk', stream: 'stdout', text: 'namespace: isolated\n' },
-      { t: 740, type: 'chunk', stream: 'stdout', text: 'seccomp: 142 syscalls allowed\n' },
+      { t: 740, type: 'chunk', stream: 'stdout', text: 'seccomp: 146 syscalls allowed\n' },
       { t: 1040, type: 'chunk', stream: 'stdout', text: 'cgroup: memory=128MB cpu=50%\n' },
       { t: 1340, type: 'chunk', stream: 'stdout', text: 'done.\n' },
     ],

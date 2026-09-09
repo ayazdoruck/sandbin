@@ -32,6 +32,10 @@ a:not(.no-underline) {
   text-underline-offset: 3px;
 }
 
+a {
+  transition: text-decoration-color 150ms ease;
+}
+
 a:hover {
   text-decoration-color: var(--fg);
 }
@@ -138,10 +142,15 @@ a:hover {
   background: var(--code-bg);
 }
 
+.nav-group .dropdown a {
+  transition: background 150ms ease;
+}
+
 .icon-link {
   display: inline-flex;
   align-items: center;
   color: var(--muted);
+  transition: color 150ms ease;
 }
 
 .icon-link:hover {
@@ -214,12 +223,25 @@ code {
 }
 
 pre {
+  position: relative;
   background: var(--code-bg);
   border: 1px solid var(--border);
-  padding: 14px 16px;
+  padding: 34px 16px 14px;
   overflow-x: auto;
   margin: 0 0 20px;
   line-height: 1.55;
+}
+
+pre::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff5f57;
+  box-shadow: 16px 0 0 #febc2e, 32px 0 0 #28c840;
 }
 
 pre code {
@@ -274,6 +296,12 @@ th {
 .card {
   border: 1px solid var(--border);
   padding: 16px;
+  transition: transform 150ms ease, border-color 150ms ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: var(--fg);
 }
 
 .card h3 {
@@ -321,6 +349,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  transition: opacity 150ms ease;
 }
 
 button:disabled {
@@ -425,6 +454,11 @@ button .hint {
   text-decoration: none;
   padding: 9px 16px;
   border: 1px solid var(--fg);
+  transition: opacity 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.btn:active {
+  transform: translateY(1px);
 }
 
 .btn svg {
@@ -496,6 +530,7 @@ button .hint {
 .bench-fill {
   background: var(--fg);
   height: 100%;
+  transition: width 900ms ease;
 }
 
 .bench-value {
@@ -516,6 +551,14 @@ button .hint {
 .feature {
   display: flex;
   gap: 14px;
+  padding: 8px;
+  margin: -8px;
+  transition: transform 150ms ease, background 150ms ease;
+}
+
+.feature:hover {
+  transform: translateY(-2px);
+  background: var(--code-bg);
 }
 
 .feature .icon {
@@ -556,6 +599,7 @@ button .hint {
   border: 1px solid var(--border);
   padding: 6px 14px;
   cursor: pointer;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
 }
 
 .demo-tabs button[aria-selected="true"] {
@@ -646,6 +690,42 @@ footer {
 
 footer a {
   color: var(--muted);
+}
+
+#demo-code.idle::after {
+  content: '\258B';
+  display: inline-block;
+  margin-left: 2px;
+  animation: sandbin-blink 1s step-end infinite;
+}
+
+@keyframes sandbin-blink {
+  50% { opacity: 0; }
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 500ms ease, transform 500ms ease;
+}
+
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .bench-fill {
+    transition: none;
+  }
+  #demo-code.idle::after {
+    animation: none;
+  }
 }
 
 @media (max-width: 600px) {

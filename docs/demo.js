@@ -100,6 +100,7 @@ function selectDemo(key) {
     btn.setAttribute('aria-selected', String(btn.dataset.key === key));
   }
   codeEl.textContent = DEMOS[key].code;
+  codeEl.classList.add('idle');
   noteEl.textContent = DEMOS[key].note ?? '';
   outputEl.textContent = '';
   statsEl.textContent = '';
@@ -112,6 +113,7 @@ async function play() {
   const token = ++playToken;
   const demo = DEMOS[activeKey];
   runBtn.disabled = true;
+  codeEl.classList.remove('idle');
   outputEl.textContent = '';
   statsEl.textContent = '';
   statsEl.className = 'stats';
@@ -132,6 +134,7 @@ async function play() {
   if (token !== playToken) return;
   renderStats(demo.result);
   runBtn.disabled = false;
+  codeEl.classList.add('idle');
 }
 
 for (const key of Object.keys(DEMOS)) {

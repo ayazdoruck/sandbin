@@ -53,10 +53,14 @@ function warmGoCache() {
     writeFileSync(path.join(dir, 'main.go'), 'package main\nfunc main() {}\n');
     execFileSync(GO_BIN, ['build', '-o', path.join(dir, 'a.out'), path.join(dir, 'main.go')], {
       env: { ...process.env, GOCACHE: GO_CACHE_DIR, GOPATH: path.join(dir, 'gopath'), CGO_ENABLED: '0' },
-      timeout: 60_000,
+      timeout: 180_000,
     });
   } catch (err) {
-    if (DEBUG) console.error(`[sandbin] go cache warm-up failed: ${err.message}`);
+    // Not gated behind DEBUG: a failed warm-up leaves every real compile
+    // to silently hit the exact cold-cache pids/ulimit failure this exists
+    // to prevent, with nothing in a normal run's output explaining why —
+    // worth a line even outside debug mode.
+    console.error(`[sandbin] go cache warm-up failed: ${err.message}`);
   }
 }
 

@@ -628,6 +628,36 @@ bugs in every other phase, because it was one.
   never once to the CI pipeline meant to gate it. A green local run and
   a green CI run are different claims; only one of them was ever
   actually checked before being reported as both
+- **two more, in the Action itself, found the same way:** once the habit
+  of actually watching `gh run watch` instead of assuming took hold, the
+  brand-new `action-test.yml` workflow (Phase 15) failed too, twice, on
+  its first two real attempts:
+  - the "Run through sandbin" step invoked the CLI as the plain
+    unprivileged `runner` user, not root — `EACCES: permission denied,
+    mkdir '/sys/fs/cgroup/.../sandbin.slice'`, the exact same cgroup
+    requirement `ci.yml`'s own test step has always needed `sudo` for.
+    Missed because local testing of the action's shell logic (Phase 15)
+    simulated `GITHUB_OUTPUT` and `github.action_path` by hand, but
+    never simulated *not having cgroup delegation as an unprivileged
+    user* — the one thing that's actually different about a real
+    Actions runner
+  - fixed that, then hit a second one immediately: the CLI itself always
+    exits `1` for a non-`ok` verdict, and GitHub Actions runs `run:`
+    steps under `bash -e` by default — so for the deliberate
+    `fail-on-error: false` test case, the script *aborted right there*,
+    before ever reaching the output-writer logic that was supposed to
+    read `fail-on-error` and decide whether to actually fail the step.
+    `fail-on-error` was never getting consulted at all in the one case
+    designed to prove it worked. `|| true` on that one line defers the
+    decision entirely to the writer script, where it belongs — verified
+    locally under `bash -e` for both `true` and `false` before pushing,
+    this time, rather than pushing and hoping
+  - both are now part of why `action-test.yml` exists at all: three real
+    bugs in this session alone were caught by an actual runner and would
+    not have been caught by any amount of additional local simulation,
+    because the thing they were exercising — real cgroup privilege
+    boundaries, real Actions runner shell defaults — doesn't exist to
+    simulate locally in the first place
 
 ## What's left
 

@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdir, writeFile, readFile, rm, mkdtemp } from 'node:fs/promises';
-import { readFileSync, realpathSync, mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, realpathSync, mkdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -57,8 +57,9 @@ const GO_CACHE_DIR = path.join(tmpdir(), 'sandbin-go-cache');
 // a slower or more contended runner as the exact pids.max/cold-cache
 // failure this function exists to prevent in the first place.
 function warmGoCache() {
+  let dir;
   try {
-    const dir = mkdtempSync(path.join(tmpdir(), 'sandbin-gowarm-'));
+    dir = mkdtempSync(path.join(tmpdir(), 'sandbin-gowarm-'));
     const warmupSource =
       'package main\n' +
       'import ("fmt"; "net"; "time")\n' +
@@ -74,6 +75,12 @@ function warmGoCache() {
     // to prevent, with nothing in a normal run's output explaining why —
     // worth a line even outside debug mode.
     console.error(`[sandbin] go cache warm-up failed: ${err.message}`);
+  } finally {
+    // GOCACHE itself is meant to persist (that's the whole point) — but the
+    // scratch dir holding the warm-up program and GOPATH is not, and was
+    // never being removed: a real, if small, leftover on every single
+    // process start with Go available.
+    if (dir) rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -152,6 +159,40 @@ const COMPILE_LIMITS = {
   tmpfsBytes: 32 * 1024 * 1024,
 };
 
+// caller-supplied limits (ultimately from an HTTP request body) end up
+// interpolated into a shell script (openFiles, into `ulimit -n`) and
+// written into cgroup control files (the rest) — every field here MUST be
+// a plain, bounded integer by the time it leaves this function, no matter
+// what shape or type the caller actually sent. A non-numeric value falls
+// back to the default; a numeric one is clamped into a sane range, never
+// passed through as-is.
+const LIMIT_BOUNDS = {
+  memoryBytes: { min: 1 * 1024 * 1024, max: 512 * 1024 * 1024 },
+  cpuPercent: { min: 1, max: 100 },
+  // bwrap's own setup needs at least 3 concurrent processes even for a
+  // single-process guest program (confirmed empirically: pids=2 fails
+  // pids.max on ordinary "print(1)", pids=3 doesn't) — a floor of 1 or 2
+  // would make sanitizeLimits() itself the reason a legitimate run fails.
+  pids: { min: 4, max: 256 },
+  wallClockMs: { min: 100, max: 60_000 },
+  outputBytes: { min: 1024, max: 4 * 1024 * 1024 },
+  fileSizeBytes: { min: 1024, max: 64 * 1024 * 1024 },
+  openFiles: { min: 4, max: 1024 },
+  tmpfsBytes: { min: 1 * 1024 * 1024, max: 256 * 1024 * 1024 },
+};
+
+function sanitizeLimits(rawLimits) {
+  const clean = {};
+  for (const key of Object.keys(DEFAULT_LIMITS)) {
+    const bounds = LIMIT_BOUNDS[key];
+    const value = Number(rawLimits?.[key]);
+    clean[key] = Number.isFinite(value)
+      ? Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)))
+      : DEFAULT_LIMITS[key];
+  }
+  return clean;
+}
+
 export const IMAGES = {
   python: { file: 'main.py', argv: ['/usr/bin/python3', '-I', '-B', '-u', '/box/main.py'] },
   bash: { file: 'main.sh', argv: ['/usr/bin/bash', '--noprofile', '--norc', '/box/main.sh'] },
@@ -201,8 +242,11 @@ async function ensureParentSlice() {
   await enableControllers(CG_PARENT);
 }
 
-async function createCgroup(id, limits) {
-  const dir = path.join(CG_PARENT, `run-${id}`);
+function cgroupPath(id) {
+  return path.join(CG_PARENT, `run-${id}`);
+}
+
+async function configureCgroup(dir, limits) {
   await mkdir(dir, { recursive: true });
   if (DEBUG) {
     console.error(`[sandbin] ${dir}: created, own controllers=${[...availableControllers(dir)].join(',')}`);
@@ -213,7 +257,6 @@ async function createCgroup(id, limits) {
   if (availableControllers(dir).has('cpu')) {
     await writeFile(path.join(dir, 'cpu.max'), `${limits.cpuPercent * 1000} 100000`);
   }
-  return dir;
 }
 
 async function killCgroup(dir) {
@@ -266,144 +309,187 @@ function buildBwrapArgs({ hostDir, argv, extraBinds, env, boxWritable }, lim, se
 
 const CGROUP_ASSIGN_FAILED = 91;
 const STATS_INTERVAL_MS = 50;
+const MAX_CHUNKS = 4_000;
 
 async function spawnInSandbox({ id, hostDir, argv, extraBinds, env, boxWritable, lim, stdin = '', onChunk, onSpawn, onStats }) {
   const seccompBpfPath = ensureSeccompProgram();
   await ensureParentSlice();
-  const cgroup = await createCgroup(id, lim);
+  // The path itself is pure (just string joining) and can't fail; computing
+  // it before the try block means the finally below always knows what to
+  // clean up, even if configureCgroup's own mkdir/writeFile calls are what
+  // throws — a directory that got as far as being created but not fully
+  // configured is exactly as much of a leak as one left over after a later
+  // failure, and deserves the same guaranteed cleanup.
+  const cgroup = cgroupPath(id);
 
-  const seccompFd = 9;
-  const bwrapArgs = buildBwrapArgs({ hostDir, argv, extraBinds, env, boxWritable }, lim, seccompFd);
+  // Everything from here on can throw for reasons that have nothing to do
+  // with the guest (a spawn failure, a stats read racing teardown, a bug) —
+  // the cgroup this function is about to create must be torn down
+  // regardless of how this block exits, not only on the path that happens
+  // to fall through to the end. A cgroup left behind here doesn't just
+  // waste a kernel object: it's the same kind of resource a caller could
+  // trigger on purpose, repeatedly, with no cap.
+  try {
+    await configureCgroup(cgroup, lim);
 
-  const script =
-    `echo $$ > '${cgroup}/cgroup.procs' || exit ${CGROUP_ASSIGN_FAILED}; ` +
-    `ulimit -f ${Math.floor(lim.fileSizeBytes / 1024)}; ` +
-    `ulimit -n ${lim.openFiles}; ` +
-    `ulimit -c 0; ` +
-    `exec ${seccompFd}< '${seccompBpfPath}'; ` +
-    `exec bwrap "$@"`;
+    const seccompFd = 9;
+    const bwrapArgs = buildBwrapArgs({ hostDir, argv, extraBinds, env, boxWritable }, lim, seccompFd);
 
-  const child = spawn('/bin/sh', ['-c', script, 'sandbin', ...bwrapArgs], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+    // lim is sanitizeLimits()'s output by the time it reaches here — every
+    // field is already a plain bounded integer — but this is also exactly
+    // the point a raw value once reached `sh -c` unescaped and became a
+    // shell-injection vector (ulimit -n), so it gets re-asserted as an
+    // integer right at the interpolation site too, not just trusted from
+    // upstream. Never build this script from anything that hasn't been
+    // through that same coercion.
+    const fileSizeKb = Math.max(0, Math.trunc(Number(lim.fileSizeBytes)) || 0) >> 10;
+    const openFiles = Math.max(1, Math.trunc(Number(lim.openFiles)) || DEFAULT_LIMITS.openFiles);
+    const script =
+      `echo $$ > '${cgroup}/cgroup.procs' || exit ${CGROUP_ASSIGN_FAILED}; ` +
+      `ulimit -f ${fileSizeKb}; ` +
+      `ulimit -n ${openFiles}; ` +
+      `ulimit -c 0; ` +
+      `exec ${seccompFd}< '${seccompBpfPath}'; ` +
+      `exec bwrap "$@"`;
 
-  const startedAt = Date.now();
+    const child = spawn('/bin/sh', ['-c', script, 'sandbin', ...bwrapArgs], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
 
-  let stdout = '', stderr = '', truncated = false, verdict = null;
-  const collect = (chunk, which) => {
-    const room = lim.outputBytes - (stdout.length + stderr.length);
-    if (room <= 0) {
-      if (!truncated) {
-        truncated = true;
-        verdict ??= 'output_limit';
-        killCgroup(cgroup);
+    const startedAt = Date.now();
+
+    let stdout = '', stderr = '', truncated = false, verdict = null, chunkCount = 0;
+    const collect = (chunk, which) => {
+      const room = lim.outputBytes - (stdout.length + stderr.length);
+      if (room <= 0 || chunkCount >= MAX_CHUNKS) {
+        if (!truncated) {
+          truncated = true;
+          verdict ??= 'output_limit';
+          killCgroup(cgroup);
+        }
+        return;
       }
-      return;
-    }
-    const text = chunk.toString('utf8').slice(0, room);
-    if (which === 'out') stdout += text; else stderr += text;
-    if (onChunk) onChunk({ stream: which === 'out' ? 'stdout' : 'stderr', text, t: Date.now() - startedAt });
-  };
-  child.stdout.on('data', (c) => collect(c, 'out'));
-  child.stderr.on('data', (c) => collect(c, 'err'));
-
-  child.stdin.on('error', () => {});
-  if (onSpawn) {
-    if (stdin) child.stdin.write(stdin);
-    onSpawn({
-      write: (text) => { try { child.stdin.write(text); } catch {} },
-      endStdin: () => { try { child.stdin.end(); } catch {} },
-    });
-  } else {
-    child.stdin.end(stdin);
-  }
-
-  const hardStopGraceMs = 2_000;
-
-  const statsTimer = onStats
-    ? setInterval(async () => {
-        const memBytes = Number(await readStat(cgroup, 'memory.current', '0'));
-        const cpuUsec = Number(/usage_usec (\d+)/.exec(await readStat(cgroup, 'cpu.stat'))?.[1] ?? 0);
-        onStats({ t: Date.now() - startedAt, memBytes, cpuMs: Math.round(cpuUsec / 1000) });
-      }, STATS_INTERVAL_MS)
-    : null;
-
-  const exit = await new Promise((resolve) => {
-    let settled = false;
-    const settle = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
+      chunkCount++;
+      const text = chunk.toString('utf8').slice(0, room);
+      if (which === 'out') stdout += text; else stderr += text;
+      if (onChunk) onChunk({ stream: which === 'out' ? 'stdout' : 'stderr', text, t: Date.now() - startedAt });
     };
+    child.stdout.on('data', (c) => collect(c, 'out'));
+    child.stderr.on('data', (c) => collect(c, 'err'));
 
-    child.on('close', (code, signal) => settle({ code, signal }));
+    child.stdin.on('error', () => {});
+    if (onSpawn) {
+      if (stdin) child.stdin.write(stdin);
+      onSpawn({
+        write: (text) => { try { child.stdin.write(text); } catch {} },
+        endStdin: () => { try { child.stdin.end(); } catch {} },
+      });
+    } else {
+      child.stdin.end(stdin);
+    }
 
-    const softTimer = setTimeout(() => {
-      verdict ??= 'timeout';
-      killCgroup(cgroup);
-    }, lim.wallClockMs);
+    const hardStopGraceMs = 2_000;
 
-    const hardTimer = setTimeout(() => {
-      verdict ??= 'killed';
-      child.stdout.destroy();
-      child.stderr.destroy();
-      child.kill('SIGKILL');
-      settle({ code: null, signal: 'SIGKILL' });
-    }, lim.wallClockMs + hardStopGraceMs);
+    const statsTimer = onStats
+      ? setInterval(async () => {
+          const memBytes = Number(await readStat(cgroup, 'memory.current', '0'));
+          const cpuUsec = Number(/usage_usec (\d+)/.exec(await readStat(cgroup, 'cpu.stat'))?.[1] ?? 0);
+          onStats({ t: Date.now() - startedAt, memBytes, cpuMs: Math.round(cpuUsec / 1000) });
+        }, STATS_INTERVAL_MS)
+      : null;
 
-    child.on('close', () => {
-      clearTimeout(softTimer);
-      clearTimeout(hardTimer);
-      clearInterval(statsTimer);
+    const exit = await new Promise((resolve) => {
+      let settled = false;
+      // Clearing the timers/interval happens here, inside settle() itself,
+      // not in a separate 'close' listener: the hard timer resolves this
+      // promise directly, without waiting for 'close', and JS's own
+      // microtask-before-next-macrotask ordering guarantees the code after
+      // this await always runs before a same-tick-or-later 'close' could —
+      // so a 'close'-only cleanup is *never* run in time on that path. The
+      // practical effect was a live statsTimer still firing (and the
+      // eventual cgroup rm() racing it) after the result had already been
+      // returned to the caller — the exact scenario the hard timer exists
+      // to handle in the first place.
+      const settle = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(softTimer);
+        clearTimeout(hardTimer);
+        clearInterval(statsTimer);
+        resolve(value);
+      };
+
+      child.on('close', (code, signal) => settle({ code, signal }));
+
+      const softTimer = setTimeout(() => {
+        verdict ??= 'timeout';
+        killCgroup(cgroup);
+      }, lim.wallClockMs);
+
+      const hardTimer = setTimeout(() => {
+        verdict ??= 'killed';
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.kill('SIGKILL');
+        settle({ code: null, signal: 'SIGKILL' });
+      }, lim.wallClockMs + hardStopGraceMs);
     });
-  });
 
-  const durationMs = Date.now() - startedAt;
-  const events = await readStat(cgroup, 'memory.events');
-  const oomKills = Number(/oom_kill (\d+)/.exec(events)?.[1] ?? 0);
-  const peakBytes = Number(await readStat(cgroup, 'memory.peak', '0'));
-  const cpuUsec = Number(/usage_usec (\d+)/.exec(await readStat(cgroup, 'cpu.stat'))?.[1] ?? 0);
-  const pidsMaxHits = Number(/max (\d+)/.exec(await readStat(cgroup, 'pids.events'))?.[1] ?? 0);
+    const durationMs = Date.now() - startedAt;
+    const events = await readStat(cgroup, 'memory.events');
+    const oomKills = Number(/oom_kill (\d+)/.exec(events)?.[1] ?? 0);
+    const peakBytes = Number(await readStat(cgroup, 'memory.peak', '0'));
+    const cpuUsec = Number(/usage_usec (\d+)/.exec(await readStat(cgroup, 'cpu.stat'))?.[1] ?? 0);
+    const pidsMaxHits = Number(/max (\d+)/.exec(await readStat(cgroup, 'pids.events'))?.[1] ?? 0);
 
-  if (!verdict && exit.code === CGROUP_ASSIGN_FAILED) verdict = 'setup_failed';
-  if (!verdict && oomKills > 0) verdict = 'memory_limit';
-  if (!verdict && exit.signal) verdict = 'killed';
-  if (!verdict) verdict = exit.code === 0 ? 'ok' : 'error';
+    if (!verdict && exit.code === CGROUP_ASSIGN_FAILED) verdict = 'setup_failed';
+    if (!verdict && oomKills > 0) verdict = 'memory_limit';
+    if (!verdict && exit.signal) verdict = 'killed';
+    if (!verdict) verdict = exit.code === 0 ? 'ok' : 'error';
 
-  await killCgroup(cgroup);
-  await rm(cgroup, { recursive: true, force: true }).catch(() => {});
-
-  return {
-    verdict, exitCode: exit.code, signal: exit.signal,
-    stdout, stderr, truncated,
-    durationMs, cpuMs: Math.round(cpuUsec / 1000), peakBytes, oomKills, pidsMaxHits,
-  };
+    return {
+      verdict, exitCode: exit.code, signal: exit.signal,
+      stdout, stderr, truncated,
+      durationMs, cpuMs: Math.round(cpuUsec / 1000), peakBytes, oomKills, pidsMaxHits,
+    };
+  } finally {
+    await killCgroup(cgroup);
+    await rm(cgroup, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 export async function run({ language = 'python', code = '', stdin = '', limits = {}, onChunk, onSpawn, onStats } = {}) {
   const spec = IMAGES[language];
   if (!spec) throw new Error(`unknown language: ${language}`);
-  const lim = { ...DEFAULT_LIMITS, ...limits };
+  const lim = sanitizeLimits(limits);
   const id = randomUUID().slice(0, 8);
 
   const hostDir = await mkdtemp(path.join(tmpdir(), 'sandbin-'));
-  await writeFile(path.join(hostDir, spec.file), code);
+  // Every exit from here on — normal completion, the early compile_error
+  // return, or spawnInSandbox throwing outright — must remove hostDir.
+  // It used to only happen on the paths that fell through to the bottom of
+  // this function, which meant any exception in between (a malformed-limit
+  // write failure was the one actually found) left the guest's own
+  // submitted source sitting in /tmp forever, on demand, for free.
+  try {
+    await writeFile(path.join(hostDir, spec.file), code);
 
-  if (spec.compile) {
-    const compileResult = await spawnInSandbox({
-      id: `${id}c`, hostDir, argv: spec.compile, extraBinds: spec.extraBinds, env: spec.env,
-      boxWritable: true, lim: COMPILE_LIMITS,
-    });
-    if (compileResult.verdict !== 'ok') {
-      await rm(hostDir, { recursive: true, force: true }).catch(() => {});
-      const verdict = compileResult.verdict === 'error' ? 'compile_error' : compileResult.verdict;
-      return { id, ...compileResult, verdict };
+    if (spec.compile) {
+      const compileResult = await spawnInSandbox({
+        id: `${id}c`, hostDir, argv: spec.compile, extraBinds: spec.extraBinds, env: spec.env,
+        boxWritable: true, lim: COMPILE_LIMITS,
+      });
+      if (compileResult.verdict !== 'ok') {
+        const verdict = compileResult.verdict === 'error' ? 'compile_error' : compileResult.verdict;
+        return { id, ...compileResult, verdict };
+      }
     }
-  }
 
-  const result = await spawnInSandbox({
-    id, hostDir, argv: spec.argv, extraBinds: spec.extraBinds, env: spec.env, lim, stdin, onChunk, onSpawn, onStats,
-  });
-  await rm(hostDir, { recursive: true, force: true }).catch(() => {});
-  return { id, ...result };
+    const result = await spawnInSandbox({
+      id, hostDir, argv: spec.argv, extraBinds: spec.extraBinds, env: spec.env, lim, stdin, onChunk, onSpawn, onStats,
+    });
+    return { id, ...result };
+  } finally {
+    await rm(hostDir, { recursive: true, force: true }).catch(() => {});
+  }
 }

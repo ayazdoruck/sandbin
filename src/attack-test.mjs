@@ -1,5 +1,5 @@
 import { run, IMAGES } from './sandbox.mjs';
-import { existsSync } from 'node:fs';
+import { existsSync, unlinkSync } from 'node:fs';
 
 const CASES = [
   { name: 'ordinary program', language: 'python',
@@ -129,6 +129,25 @@ const CASES = [
   { name: 'c: network blocked at the syscall level', language: 'c',
     code: '#include <sys/socket.h>\n#include <netinet/in.h>\n#include <arpa/inet.h>\n#include <stdio.h>\nint main(){ int fd = socket(AF_INET, SOCK_STREAM, 0); struct sockaddr_in a = {0}; a.sin_family = AF_INET; a.sin_port = htons(80); inet_pton(AF_INET, "1.1.1.1", &a.sin_addr); int r = connect(fd, (struct sockaddr*)&a, sizeof(a)); printf("connect=%d\\n", r); return 0; }',
     check: (r) => !r.stdout.includes('connect=0') },
+
+  { name: 'limits.openFiles cannot inject shell commands', language: 'python',
+    code: 'print("still ran the real program")',
+    limits: { openFiles: `64; touch /tmp/sandbin-injection-canary-${process.pid} #` },
+    check: (r) => {
+      const canary = `/tmp/sandbin-injection-canary-${process.pid}`;
+      const injected = existsSync(canary);
+      if (injected) unlinkSync(canary);
+      // openFiles used to be interpolated straight into `sh -c` with no
+      // escaping; the `#` above would have commented out the rest of the
+      // script (including `exec bwrap`), so a passing check here means
+      // both that the injected command never ran *and* that bwrap did.
+      return r.verdict === 'ok' && r.stdout.includes('still ran the real program') && !injected;
+    } },
+
+  { name: 'malformed limits fall back to safe defaults instead of throwing', language: 'python',
+    code: 'print("ok despite garbage limits")',
+    limits: { memoryBytes: 'not-a-number', pids: -5, wallClockMs: 'nope', cpuPercent: {} },
+    check: (r) => r.verdict === 'ok' && r.stdout.includes('ok despite garbage limits') },
 
   // Go is only registered when the host actually has a toolchain (see
   // sandbox.mjs) — these cases run for real wherever it's available and are

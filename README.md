@@ -304,6 +304,46 @@ to — so the CLI prints the compiler's captured `stderr` in full once the
 result comes back, rather than a bare `verdict compile_error` with no
 explanation.
 
+### GitHub Action
+
+`action.yml` at the repo root turns this into a composite GitHub Action —
+any workflow can run untrusted code through the real sandbox as a step,
+without vendoring the CLI or standing up a server:
+
+```yaml
+- uses: ayazdoruck/sandbin@main
+  id: run
+  with:
+    language: python
+    code: |
+      print("hello from CI")
+
+- run: echo "${{ steps.run.outputs.stdout }}"
+```
+
+Inputs mirror the CLI's own flags: `code` or `code-file` (exactly one),
+`language` (required), `stdin`, `memory`/`cpu`/`timeout`/`pids` for limit
+overrides, and `fail-on-error` (default `true`) to control whether a
+non-`ok` verdict fails the step or is only reported through outputs.
+Outputs are `verdict`, `exit-code`, `stdout` and `stderr`.
+
+It installs the same host requirements this project's own CI does
+(`bubblewrap`, `libseccomp`, `gcc`, `golang-go` when `language: go`, the
+AppArmor unprivileged-userns sysctl) — so it needs an Ubuntu-family
+runner, same as everywhere else this runs. User-supplied inputs
+(`code`, `stdin`, and the rest) are passed to every shell step through
+`env:`, never interpolated directly into a `run:` script — the standard
+mitigation for the well-known class of Actions injection where untrusted
+input becomes part of the script text itself, which would be a strange
+thing to get wrong in an action whose entire purpose is running untrusted
+input safely.
+
+`.github/workflows/action-test.yml` exercises the action against itself
+on every push: a success case (asserting `verdict`/`exit-code`/`stdout`),
+a `fail-on-error: false` failure case (asserting the failure is reported
+via outputs rather than either silently swallowed or killing the job),
+and the `code-file` input path.
+
 ## Tests
 
 ```bash
@@ -503,7 +543,7 @@ on the [benchmarks page](https://sandbin.vercel.app/benchmarks).
 
 ## Status
 
-All fourteen roadmap phases are done: namespace/cgroup/seccomp/rlimit
+All fifteen roadmap phases are done: namespace/cgroup/seccomp/rlimit
 isolation, a bounded and backpressured job queue, a streaming HTTP +
 WebSocket API, Python/Bash/Node/C support plus Go wherever a toolchain is
 available, a minimal browser frontend with a live resource graph and
@@ -511,10 +551,12 @@ shareable permalinks, API keys with per-tier rate limits, a live
 `/metrics` dashboard (optionally behind Basic Auth), a `sandbin` CLI that
 runs either locally or against a remote server, a real concurrency/
 throughput benchmark (`npm run loadtest`) alongside the cold-start
-comparison, and CI running all eight test suites on every push. `npm
-start` and open it, or `npm link` and run `sandbin run script.py`. See
-[ROADMAP.md](ROADMAP.md) for what was actually found building each phase
-— several real bugs, not just a feature checklist.
+comparison, a composite GitHub Action (`action.yml`) for running
+untrusted code as a CI step, and CI running all eight test suites on
+every push. `npm start` and open it, or `npm link` and run
+`sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was
+actually found building each phase — several real bugs, not just a
+feature checklist.
 
 ### Known issues
 

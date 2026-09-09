@@ -1,0 +1,76 @@
+name: Action test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run inline code, expect success
+        id: ok
+        uses: ./
+        with:
+          language: python
+          code: |
+            print("hello from the sandbin action")
+
+      - name: Assert the success case
+        run: |
+          if [ "${{ steps.ok.outputs.verdict }}" != "ok" ]; then
+            echo "expected verdict 'ok', got '${{ steps.ok.outputs.verdict }}'"
+            exit 1
+          fi
+          if [ "${{ steps.ok.outputs.exit-code }}" != "0" ]; then
+            echo "expected exit-code '0', got '${{ steps.ok.outputs.exit-code }}'"
+            exit 1
+          fi
+          case "${{ steps.ok.outputs.stdout }}" in
+            *"hello from the sandbin action"*) ;;
+            *) echo "stdout output did not contain the expected text"; exit 1 ;;
+          esac
+
+      - name: Run a file, with fail-on-error disabled, expect a reported failure that doesn't fail the job
+        id: bad
+        uses: ./
+        with:
+          language: python
+          code: |
+            import sys
+            print("before exit")
+            sys.exit(7)
+          fail-on-error: 'false'
+
+      - name: Assert the failure case was reported, not swallowed
+        run: |
+          if [ "${{ steps.bad.outputs.verdict }}" != "error" ]; then
+            echo "expected verdict 'error', got '${{ steps.bad.outputs.verdict }}'"
+            exit 1
+          fi
+          if [ "${{ steps.bad.outputs.exit-code }}" != "7" ]; then
+            echo "expected exit-code '7', got '${{ steps.bad.outputs.exit-code }}'"
+            exit 1
+          fi
+
+      - name: Run from a file (code-file input), expect success
+        id: file
+        run: echo 'print(2 + 2)' > /tmp/action-test.py
+        shell: bash
+
+      - uses: ./
+        id: fromfile
+        with:
+          language: python
+          code-file: /tmp/action-test.py
+
+      - name: Assert the code-file case
+        run: |
+          case "${{ steps.fromfile.outputs.stdout }}" in
+            *"4"*) ;;
+            *) echo "expected stdout to contain 4, got '${{ steps.fromfile.outputs.stdout }}'"; exit 1 ;;
+          esac

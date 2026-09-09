@@ -1,0 +1,168 @@
+name: 'sandbin'
+description: 'Run untrusted code in a Docker-free sandbox (namespaces + seccomp + cgroups) as a CI step.'
+author: 'ayazdoruck'
+branding:
+  icon: 'shield'
+  color: 'gray-dark'
+
+inputs:
+  code:
+    description: 'Source code to run, given inline. Exactly one of code / code-file is required.'
+    required: false
+    default: ''
+  code-file:
+    description: 'Path to a file containing the source code to run. Exactly one of code / code-file is required.'
+    required: false
+    default: ''
+  language:
+    description: 'python, bash, node, c, or go (go needs a Go toolchain on the runner).'
+    required: true
+  stdin:
+    description: "Optional stdin for the guest program."
+    required: false
+    default: ''
+  memory:
+    description: 'Override the memory limit, in bytes.'
+    required: false
+    default: ''
+  cpu:
+    description: 'Override the CPU limit, as a percent.'
+    required: false
+    default: ''
+  timeout:
+    description: 'Override the wall-clock limit, in milliseconds.'
+    required: false
+    default: ''
+  pids:
+    description: 'Override the process-count limit.'
+    required: false
+    default: ''
+  fail-on-error:
+    description: "Fail this step if the run's verdict isn't 'ok'. Set to 'false' to only report it via outputs."
+    required: false
+    default: 'true'
+
+outputs:
+  verdict:
+    description: "ok, error, timeout, memory_limit, output_limit, killed, compile_error, or setup_failed."
+    value: ${{ steps.run.outputs.verdict }}
+  exit-code:
+    description: "The guest program's own exit code, if it has one."
+    value: ${{ steps.run.outputs.exit-code }}
+  stdout:
+    description: 'Captured stdout.'
+    value: ${{ steps.run.outputs.stdout }}
+  stderr:
+    description: 'Captured stderr.'
+    value: ${{ steps.run.outputs.stderr }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        SANDBIN_CODE: ${{ inputs.code }}
+        SANDBIN_CODE_FILE: ${{ inputs.code-file }}
+      run: |
+        if [ -z "$SANDBIN_CODE" ] && [ -z "$SANDBIN_CODE_FILE" ]; then
+          echo "::error::sandbin action: one of 'code' or 'code-file' is required"
+          exit 1
+        fi
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: Install bubblewrap, libseccomp and gcc
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bubblewrap libseccomp-dev gcc
+
+    - name: Install Go toolchain
+      if: ${{ inputs.language == 'go' }}
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y golang-go
+
+    - name: Allow unprivileged user namespaces
+      shell: bash
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+    - name: Install sandbin's own dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+
+    - name: Resolve the code file
+      id: code
+      shell: bash
+      env:
+        SANDBIN_CODE: ${{ inputs.code }}
+        SANDBIN_CODE_FILE: ${{ inputs.code-file }}
+      run: |
+        if [ -n "$SANDBIN_CODE" ]; then
+          tmp="$(mktemp)"
+          printf '%s' "$SANDBIN_CODE" > "$tmp"
+          echo "file=$tmp" >> "$GITHUB_OUTPUT"
+        else
+          echo "file=$SANDBIN_CODE_FILE" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Run through sandbin
+      id: run
+      shell: bash
+      env:
+        SANDBIN_CODE_FILE: ${{ steps.code.outputs.file }}
+        SANDBIN_LANGUAGE: ${{ inputs.language }}
+        SANDBIN_STDIN: ${{ inputs.stdin }}
+        SANDBIN_MEMORY: ${{ inputs.memory }}
+        SANDBIN_CPU: ${{ inputs.cpu }}
+        SANDBIN_TIMEOUT: ${{ inputs.timeout }}
+        SANDBIN_PIDS: ${{ inputs.pids }}
+        SANDBIN_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: |
+        args=(run "$SANDBIN_CODE_FILE" -l "$SANDBIN_LANGUAGE" --json)
+
+        if [ -n "$SANDBIN_STDIN" ]; then
+          stdin_file="$(mktemp)"
+          printf '%s' "$SANDBIN_STDIN" > "$stdin_file"
+          args+=(-i "$stdin_file")
+        fi
+        [ -n "$SANDBIN_MEMORY" ] && args+=(--memory "$SANDBIN_MEMORY")
+        [ -n "$SANDBIN_CPU" ] && args+=(--cpu "$SANDBIN_CPU")
+        [ -n "$SANDBIN_TIMEOUT" ] && args+=(--timeout "$SANDBIN_TIMEOUT")
+        [ -n "$SANDBIN_PIDS" ] && args+=(--pids "$SANDBIN_PIDS")
+
+        result_file="$(mktemp)"
+        node "${{ github.action_path }}/bin/sandbin.mjs" "${args[@]}" > "$result_file"
+
+        SANDBIN_RESULT_FILE="$result_file" node --input-type=module -e '
+          import { readFileSync, appendFileSync } from "node:fs";
+
+          const result = JSON.parse(readFileSync(process.env.SANDBIN_RESULT_FILE, "utf8"));
+          const delimiter = `sandbin_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+          appendFileSync(process.env.GITHUB_OUTPUT, [
+            `verdict=${result.verdict}`,
+            `exit-code=${result.exitCode ?? ""}`,
+            `stdout<<${delimiter}`,
+            result.stdout,
+            delimiter,
+            `stderr<<${delimiter}`,
+            result.stderr,
+            delimiter,
+            "",
+          ].join("\n"));
+
+          if (result.stdout) process.stdout.write(result.stdout);
+          if (result.stderr) process.stderr.write(result.stderr);
+
+          if (process.env.SANDBIN_FAIL_ON_ERROR === "true" && result.verdict !== "ok") {
+            console.log(`::error::sandbin run finished with verdict "${result.verdict}"`);
+            process.exit(1);
+          }
+        '

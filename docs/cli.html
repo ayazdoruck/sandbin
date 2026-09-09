@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLI · sandbin docs</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">sandbin</a>
+    <nav>
+      <a href="/">overview</a>
+      <details class="nav-group">
+        <summary>how it works <span class="caret">&#9662;</span></summary>
+        <div class="dropdown">
+          <a href="architecture">architecture</a>
+          <a href="security">security</a>
+        </div>
+      </details>
+      <details class="nav-group has-current" open>
+        <summary>using it <span class="caret">&#9662;</span></summary>
+        <div class="dropdown">
+          <a href="api">api</a>
+          <a href="cli" aria-current="page">cli</a>
+          <a href="languages">languages</a>
+        </div>
+      </details>
+      <details class="nav-group">
+        <summary>proof <span class="caret">&#9662;</span></summary>
+        <div class="dropdown">
+          <a href="benchmarks">benchmarks</a>
+          <a href="testing">testing</a>
+        </div>
+      </details>
+      <a class="icon-link" href="https://github.com/ayazdoruck/sandbin" aria-label="View source on GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </nav>
+  </div>
+</div>
+
+<main>
+  <h1>CLI</h1>
+  <p class="lede">A third way to talk to sandbin, alongside the browser playground and the raw HTTP API &mdash; run code straight from a terminal, with no server required by default.</p>
+
+  <h2>Install</h2>
+  <pre><code>git clone https://github.com/ayazdoruck/sandbin.git
+cd sandbin
+npm install
+npm link</code></pre>
+  <p><code>npm link</code> puts <code>sandbin</code> on <code>PATH</code>. Without it, <code>node bin/sandbin.mjs ...</code> works identically.</p>
+
+  <h2>Two modes, one command</h2>
+  <p>
+    <strong>Local (the default).</strong> No server, no port &mdash;
+    <code>bin/sandbin.mjs</code> imports <code>sandbox.mjs</code> directly
+    and calls <code>run()</code> itself:
+  </p>
+  <pre><code>sandbin run script.py</code></pre>
+  <p>
+    <strong>Remote, with <code>--server</code>.</strong> Submits over the
+    exact same HTTP + WebSocket protocol the browser frontend speaks
+    against a running instance, local or not:
+  </p>
+  <pre><code>sandbin run script.py --server localhost:8080</code></pre>
+  <p>
+    Local is the default on purpose: the more common case for someone who
+    already has the repo checked out is "run this file through the real
+    sandbox right now," which needs nothing running and no port to pick.
+    Local mode needs the same host requirements as <code>npm start</code>
+    itself &mdash; see <a href="architecture">Architecture</a>.
+  </p>
+
+  <h2>Getting code in</h2>
+  <p>Exactly one source, never ambiguous about which wins:</p>
+  <pre><code>sandbin run script.py                    # from a file
+sandbin run -l python -e 'print(1 + 1)'  # inline
+cat script.sh | sandbin run -l bash      # piped stdin</code></pre>
+  <p>
+    Language is inferred from the file extension (<code>.py</code>,
+    <code>.sh</code>/<code>.bash</code>, <code>.js</code>/<code>.mjs</code>/<code>.cjs</code>,
+    <code>.c</code>, <code>.go</code>) when a file is given.
+    <code>-l</code>/<code>--language</code> overrides it, or supplies it
+    outright for <code>-e</code> or piped input.
+  </p>
+
+  <h2>Output and exit codes</h2>
+  <p>
+    Stdout and stderr stream live, each to their own real stream, as
+    <code>chunk</code> events arrive &mdash; in local mode via
+    <code>run()</code>'s own <code>onChunk</code>, in remote mode via the
+    same WebSocket messages the frontend renders. A summary prints to
+    stderr once it finishes:
+  </p>
+  <pre><code>$ sandbin run -l python -e 'print("hi")'
+hi
+
+verdict      ok
+duration     14ms
+cpu          6ms
+peak memory  3.9 MB
+exit code    0</code></pre>
+  <p>
+    The process exits <code>0</code> for verdict <code>ok</code>,
+    <code>1</code> otherwise &mdash; deliberately <em>not</em> a passthrough
+    of the guest's own exit code. A guest that calls <code>sys.exit(3)</code>
+    still means the CLI itself succeeded at running it and observing that;
+    the verdict (printed alongside duration, CPU and peak memory) is what
+    actually failed. Safe to use directly in shell scripts and CI:
+  </p>
+  <pre><code>sandbin run deploy-check.py || echo "check failed, see verdict above"</code></pre>
+  <div class="callout">
+    <span class="callout-label">A compile failure needed a second look</span>
+    <p>
+      <code>run()</code>'s <code>onChunk</code> only ever covers the
+      <em>execute</em> phase &mdash; the compile phase (<code>c</code>,
+      <code>go</code>) never gets the callback at all. A compile failure
+      was streaming nothing and then printing a bare
+      <code>verdict compile_error</code> with zero indication of what the
+      compiler actually said. The CLI now prints the result's own captured
+      <code>stderr</code> in full for exactly the two verdicts where the
+      streamed callback wouldn't have shown it
+      (<code>compile_error</code>, <code>setup_failed</code>) &mdash; not a
+      change to <code>sandbox.mjs</code> itself, the diagnostic was already
+      there, the CLI just wasn't showing it.
+    </p>
+  </div>
+
+  <h2>Other commands</h2>
+  <table>
+    <tr><th>Command</th><th>Does</th></tr>
+    <tr><td><code>sandbin languages</code></td><td>lists what <em>this host</em> can run &mdash; reads local <code>IMAGES</code> directly, so <code>go</code> only appears if a toolchain was actually found</td></tr>
+    <tr><td><code>sandbin keys create</code></td><td>wraps <code>POST /keys</code> against a running server</td></tr>
+    <tr><td><code>sandbin keys status &lt;key&gt;</code></td><td>wraps <code>GET /keys/:key</code></td></tr>
+    <tr><td><code>sandbin --help</code></td><td>every flag, including the limit overrides below</td></tr>
+  </table>
+
+  <h2>Flags</h2>
+  <table>
+    <tr><th>Flag</th><th>Meaning</th></tr>
+    <tr><td><code>-l, --language &lt;lang&gt;</code></td><td>override or supply the language</td></tr>
+    <tr><td><code>-e, --eval &lt;code&gt;</code></td><td>inline code instead of a file</td></tr>
+    <tr><td><code>-i, --stdin &lt;file&gt;</code></td><td>file whose contents become the guest's stdin (<code>-</code> reads this process's own stdin)</td></tr>
+    <tr><td><code>-s, --server &lt;url&gt;</code></td><td>submit to a running server instead of running locally (env <code>SANDBIN_SERVER</code>)</td></tr>
+    <tr><td><code>-k, --key &lt;key&gt;</code></td><td>API key sent as <code>X-Sandbin-Key</code> (env <code>SANDBIN_KEY</code>)</td></tr>
+    <tr><td><code>--json</code></td><td>print the full result object once, instead of streaming</td></tr>
+    <tr><td><code>--memory</code> / <code>--cpu</code> / <code>--timeout</code> / <code>--pids</code></td><td>override the matching resource limit</td></tr>
+  </table>
+  <p>
+    <code>--json</code> skips live streaming entirely and prints the whole
+    result object &mdash; <code>verdict</code>, <code>stdout</code>,
+    <code>stderr</code>, <code>durationMs</code>, <code>cpuMs</code>,
+    <code>peakBytes</code>, and the rest &mdash; once, for scripting:
+  </p>
+  <pre><code>sandbin run server.js --json | node -pe "JSON.parse(require('fs').readFileSync(0)).verdict"</code></pre>
+
+  <h2>Tested as a real subprocess</h2>
+  <p>
+    <code>src/cli-test.mjs</code> spawns the actual <code>bin/sandbin.mjs</code>
+    with <code>node</code>, not by importing its functions &mdash; both
+    against <code>run()</code> directly (local) and against a real
+    <code>createServer()</code> on an ephemeral port (remote), asserting on
+    captured stdout/stderr/exit code exactly the way a real caller would
+    observe them. See <a href="testing">Testing</a>.
+  </p>
+
+  <div class="page-nav">
+    <a class="prev" href="api"><span class="dir">Previous</span>&larr; API</a>
+    <a class="next" href="languages"><span class="dir">Next</span>Languages &rarr;</a>
+  </div>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <span>MIT licensed</span>
+    <a href="https://github.com/ayazdoruck/sandbin">github.com/ayazdoruck/sandbin</a>
+  </div>
+</footer>
+
+</body>
+</html>

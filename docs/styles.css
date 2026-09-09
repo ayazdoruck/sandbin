@@ -79,6 +79,65 @@ a:hover {
   border-bottom: 1px solid var(--fg);
 }
 
+.nav-group {
+  position: relative;
+}
+
+.nav-group summary {
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+}
+
+.nav-group summary::-webkit-details-marker,
+.nav-group summary::marker {
+  display: none;
+  content: '';
+}
+
+.nav-group summary:hover,
+.nav-group.has-current summary {
+  color: var(--fg);
+}
+
+.nav-group.has-current summary {
+  border-bottom: 1px solid var(--fg);
+}
+
+.nav-group summary .caret {
+  font-size: 9px;
+  opacity: 0.6;
+}
+
+.nav-group .dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 6px 0;
+  min-width: 130px;
+  max-width: calc(100vw - 32px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-group .dropdown a {
+  padding: 6px 14px;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.nav-group .dropdown a:hover {
+  background: var(--code-bg);
+}
+
 .icon-link {
   display: inline-flex;
   align-items: center;

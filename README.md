@@ -544,7 +544,7 @@ on the [benchmarks page](https://sandbin.vercel.app/benchmarks).
 
 ## Status
 
-All fifteen roadmap phases are done: namespace/cgroup/seccomp/rlimit
+All seventeen roadmap phases are done: namespace/cgroup/seccomp/rlimit
 isolation, a bounded and backpressured job queue, a streaming HTTP +
 WebSocket API, Python/Bash/Node/C support plus Go wherever a toolchain is
 available, a minimal browser frontend with a live resource graph and
@@ -554,8 +554,12 @@ runs either locally or against a remote server, a real concurrency/
 throughput benchmark (`npm run loadtest`) alongside the cold-start
 comparison, a composite GitHub Action (`action.yml`) for running
 untrusted code as a CI step, and CI running all eight test suites on
-every push. `npm start` and open it, or `npm link` and run
-`sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was
+every push — plus a full, on-request audit of the control plane that
+found and fixed a real unauthenticated RCE and a real path-traversal
+bug, alongside several resource leaks (see
+[Phase 17](ROADMAP.md#phase-17--a-full-audit-of-the-control-plane-on-request-done)
+for the complete, reproduced trail). `npm start` and open it, or
+`npm link` and run `sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was
 actually found building each phase — several real bugs, not just a
 feature checklist.
 

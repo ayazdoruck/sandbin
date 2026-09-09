@@ -685,6 +685,128 @@ bugs in every other phase, because it was one.
     boundaries, real Actions runner shell defaults — doesn't exist to
     simulate locally in the first place
 
+## Phase 17 — a full audit of the control plane, on request (done)
+
+Requested directly: read `sandbox.mjs`, `policy.c` and `server.mjs` for
+sandbox escapes, TOCTOU, FD/env leakage, `/proc`/`/sys` exposure, cgroup
+lifecycle bugs, bwrap argument injection, missing syscalls, resource
+exhaustion, queue/WebSocket DoS, API key/rate-limit bypass, permalink/data
+store safety, the compile-vs-execute sandbox gap, and what actually
+changes if this is exposed publicly. Every claim below was reproduced,
+not just reasoned about — several were fixed in the same pass once found.
+
+**Found and fixed, both confirmed exploitable before the fix:**
+
+- **Unauthenticated RCE via `limits.openFiles`.** Interpolated straight
+  into a shell script (`ulimit -n ${lim.openFiles}`) with no escaping,
+  no validation, no type check — a single `POST /runs` with
+  `limits: { openFiles: "64; touch /tmp/x #" }` ran the injected command
+  as the sandbin process itself, and the `#` commented out the
+  `exec bwrap` line that would have followed, so the sandbox never even
+  started. Confirmed with a real file appearing on the host from one
+  request. `fileSizeBytes` happened to be safe already — it's divided
+  by 1024 before interpolation, which coerces a non-numeric string to
+  `NaN` — but that was incidental, not a deliberate check, and
+  `openFiles` sat right next to it with none. Fixed with
+  `sanitizeLimits()`: every field in `limits` is coerced to a bounded
+  integer (falling back to its default on anything non-numeric) before
+  it's used for *anything* — cgroup writes, bwrap args, or the shell
+  script — and the interpolation site re-asserts the coercion itself
+  too, so it doesn't depend solely on every future caller remembering to
+  sanitize first.
+- **Path traversal via the `X-Sandbin-Key` header, into an arbitrary
+  file read.** `apiKeys.load(headerKey)` got the raw header value with
+  no validation. `GET /keys/:key` and `GET /r/:id/data` happened to be
+  safe already, but only because their URL regex (`[^/]+`) can't capture
+  a literal `/` — an accident of routing, not a check — and a header
+  isn't a URL segment, so the same accident didn't cover it.
+  `X-Sandbin-Key: ../../elsewhere/canary` resolved straight to a file
+  outside `apiKeyDir` via `path.join`'s own `..` handling, confirmed
+  with a real file whose fabricated `{key, requestsPerHour: 999999}`
+  granted exactly that quota — and confirmed *end to end*, not just at
+  the file-read layer: with the traversal in place, more than the real
+  20/hour anonymous limit actually got through. Fixed with a strict
+  format check (exactly what `issue()` / `randomUUID()` produce) applied
+  to all three routes that accept one of these ids, not only the one
+  proven exploitable.
+
+**Found and fixed, real but not independently exploitable — leaks and
+lifecycle bugs, several confirmed by reproducing them, not just reading
+the code:**
+
+- `ratelimit.mjs`'s bucket `Map` never removed an entry — confirmed with
+  200,000 synthetic ids, the very first one still holding its original
+  unreset count afterward. Every distinct id an attacker can present
+  (trivially rotated on IPv6) grew this forever. Added `sweep()`, wired
+  into the same hourly interval `permalinks.sweep()` already used.
+- `apikeys.mjs` had no expiry at all — confirmed by backdating a key's
+  `createdAt` five years and it still loading at full quota; `createdAt`
+  was written and never once read back. Added a 90-day TTL + `sweep()`,
+  mirroring `permalinks.mjs`.
+- A malformed `limits` field made `createCgroup`'s `writeFile` throw,
+  and nothing after that point ever ran — confirmed: one bad request
+  left both the submitted source code (`hostDir`) and an orphaned cgroup
+  directory on disk, on demand, with `sanitizeLimits()` now closing the
+  trigger but the underlying fragility (cleanup only on the path that
+  fell through to the end) fixed at its root too, with `try`/`finally`
+  around both lifecycles.
+- The hard-timeout backstop resolves the supervisor promise directly,
+  without waiting for the child's `'close'` — but clearing
+  `statsTimer`/`softTimer`/`hardTimer` only happened inside a `'close'`
+  listener. JS's microtask-before-next-macrotask ordering guarantees
+  the code after that `await` always runs first, proven with an isolated
+  reproduction of the exact pattern — so whenever the hard timer is
+  actually the one that settles (precisely the case it exists for), the
+  interval was still armed when the result had already been returned.
+  Fixed by clearing all three inside `settle()` itself.
+- `warmGoCache()`'s own scratch directory (its `GOPATH` module cache)
+  was never removed — confirmed 254 leaked directories on the machine
+  this was found on, from testing alone, ~2 MB each. Fixed with
+  `try`/`finally`.
+- Writing the regression test for the `openFiles` fix found a second,
+  self-inflicted bug: an initial `pids` floor of 1 in `sanitizeLimits`
+  made even `print(1)` fail `pids.max`, because bwrap's own setup needs
+  at least 3 concurrent processes for a single-process guest — verified
+  empirically (`pids=2` fails, `pids=3` doesn't), floor set to 4.
+
+**Checked and confirmed already correct, not just assumed:**
+
+- FD leakage: a guest reading `/proc/self/fd` sees only 0/1/2 — the
+  server's own listening socket and file handles do not leak into
+  `spawn()`'s child chain.
+- Environment leakage: a secret set on the server's own process
+  (`SANDBIN_SUPER_SECRET_TOKEN`) is not visible to a guest running
+  `env` — `--clearenv` plus the explicit `--setenv` allowlist holds.
+- `/proc`/`/sys` exposure: `/sys` isn't mounted into the sandbox at all
+  (absent from `buildBwrapArgs` entirely); `/proc` is scoped to the
+  guest's own fresh PID namespace.
+- Argument injection into `bwrap` itself: `argv`/`extraBinds`/`env` are
+  always the fixed, hardcoded `IMAGES` table for the validated
+  `language` — user code is written to a file and never appears as a
+  command-line argument anywhere.
+
+**Noted, not fixed — lower-priority hardening, not active exploits:**
+
+- No cap on concurrent WebSocket connections to `/runs/:id/stream`,
+  and that route isn't covered by the `POST /runs` rate limiter at all.
+- The queue's `maxPerKey` partitioning is trivially defeated by rotating
+  `X-Sandbin-Key` to an arbitrary fresh string per request — documented,
+  intended behavior for concurrency partitioning, but its security
+  implication (an unauthenticated caller can claim far more than one
+  identity's share of `maxConcurrency`) was never stated plainly before.
+- `ioctl` is allowed with no argument filtering at all — not currently
+  reachable as an escape given the fd's available to a guest are pipes,
+  not ttys or devices, but broader than strictly necessary.
+- `seccomp.mjs`'s cached BPF path is never re-validated after the first
+  successful check in a given process's lifetime — requires pre-existing
+  host write access to matter at all, so it's a defense-in-depth gap,
+  not a remotely exploitable one.
+
+108/108 tests passing (was 95) — 13 new adversarial/regression cases
+across `test:sandbox`, `test:server`, `test:ratelimit` and
+`test:apikeys`, each added specifically to keep one of the bugs above
+from coming back silently.
+
 ## What's left
 
 Closing real gaps rather than adding breadth for its own sake, roughly in

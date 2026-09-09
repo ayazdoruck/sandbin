@@ -3,6 +3,7 @@ const codeEl = document.getElementById('demo-code');
 const runBtn = document.getElementById('demo-run');
 const outputEl = document.getElementById('demo-output');
 const statsEl = document.getElementById('demo-stats');
+const noteEl = document.getElementById('demo-note');
 
 let activeKey = 'hello';
 let playToken = 0;
@@ -68,6 +69,7 @@ function selectDemo(key) {
     btn.setAttribute('aria-selected', String(btn.dataset.key === key));
   }
   codeEl.textContent = DEMOS[key].code;
+  noteEl.textContent = DEMOS[key].note ?? '';
   outputEl.textContent = '';
   statsEl.textContent = '';
   statsEl.className = 'stats';

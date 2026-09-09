@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Benchmarks · sandbin docs</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">sandbin</a>
+    <nav>
+      <a href="index.html">overview</a>
+      <a href="architecture.html">architecture</a>
+      <a href="api.html">api</a>
+      <a href="languages.html">languages</a>
+      <a href="benchmarks.html" aria-current="page">benchmarks</a>
+      <a href="security.html">security</a>
+      <a href="testing.html">testing</a>
+      <a class="icon-link" href="https://github.com/ayazdoruck/sandbin" aria-label="View source on GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </nav>
+  </div>
+</div>
+
+<main>
+  <h1>Benchmarks</h1>
+  <p class="lede">One real measurement, disclosed in full, instead of a "hundreds of milliseconds" hand-wave. Run the same commands yourself &mdash; nothing here depends on trusting us.</p>
+
+  <h2>Cold start: sandbin vs Docker</h2>
+  <p>Same machine, same moment, sequential runs, image pre-pulled for both so neither pays a network tax:</p>
+  <div class="bench-row">
+    <div class="bench-label">sandbin</div>
+    <div class="bench-track"><div class="bench-fill" style="width: 5.7%"></div></div>
+    <div class="bench-value">21 ms</div>
+  </div>
+  <div class="bench-row">
+    <div class="bench-label">Docker</div>
+    <div class="bench-track"><div class="bench-fill" style="width: 100%"></div></div>
+    <div class="bench-value">369 ms</div>
+  </div>
+
+  <table>
+    <tr><th></th><th>median</th><th>mean</th><th>min</th><th>max</th><th>n</th></tr>
+    <tr><td>sandbin</td><td>21 ms</td><td>20.9 ms</td><td>13 ms</td><td>27 ms</td><td>20</td></tr>
+    <tr><td>Docker</td><td>369 ms</td><td>368.3 ms</td><td>343 ms</td><td>404 ms</td><td>20</td></tr>
+  </table>
+  <p><strong>17.6&times;</strong> faster by median, <strong>17.6&times;</strong> by mean &mdash; the distributions don't overlap at all; the slowest sandbin run (27&nbsp;ms) still beat the fastest Docker run (343&nbsp;ms) by more than 12&times;.</p>
+
+  <h3>Method</h3>
+  <p>Workload: run <code>python3 -c "print(1)"</code> and measure until the process exits.</p>
+  <pre><code># sandbin — via run() directly, durationMs from the result
+{ language: 'python', code: 'print(1)' }
+
+# Docker — wall-clock around the whole command
+docker run --rm python:3.12-alpine python3 -c "print(1)"</code></pre>
+  <p>20 sequential runs each, back to back, on the same otherwise-idle machine. No warm-up runs excluded &mdash; the numbers above include whatever cold-cache effects a real first request would also hit.</p>
+
+  <h3>Environment</h3>
+  <div class="kv">
+    <dt>OS</dt><dd>Omarchy (Arch-based), Linux 7.2.3-arch1-3, x86_64</dd>
+    <dt>Docker</dt><dd>29.7.2</dd>
+    <dt>Python image</dt><dd><code>python:3.12-alpine</code>, pre-pulled</dd>
+    <dt>sandbin</dt><dd>Node 24.x, <code>python3 -I -B -u</code> guest</dd>
+  </div>
+
+  <h3>Raw samples</h3>
+  <p>sandbin (ms), sorted:</p>
+  <pre><code>13, 14, 17, 18, 20, 20, 20, 20, 20, 21, 21, 22, 22, 22, 23, 23, 24, 25, 26, 27</code></pre>
+  <p>Docker (ms), sorted:</p>
+  <pre><code>343, 347, 348, 349, 350, 356, 359, 359, 362, 363, 369, 369, 369, 377, 381, 382, 387, 393, 399, 404</code></pre>
+
+  <h3>What this does and doesn't show</h3>
+  <p>
+    This measures exactly one thing: the latency of going from "here is some
+    code" to "it's running," for the smallest possible workload, on one
+    machine, once. It does not measure sustained throughput, Docker's much
+    larger ecosystem and orchestration tooling, or how either scales under
+    heavy concurrent load &mdash; sandbin's own concurrency behavior is
+    covered separately in the <a href="testing.html">queue tests</a>, not
+    here. The gap exists because Docker pays for a daemon round-trip, image
+    layer resolution and full container lifecycle machinery that sandbin's
+    direct <code>bwrap</code> + cgroup approach simply doesn't have to.
+  </p>
+
+  <h3>Reproduce it</h3>
+  <pre><code>git clone https://github.com/ayazdoruck/sandbin.git
+cd sandbin
+npm install
+
+# sandbin
+node -e "
+import('./src/sandbox.mjs').then(async ({run}) => {
+  const t = [];
+  for (let i = 0; i < 20; i++) t.push((await run({ language: 'python', code: 'print(1)' })).durationMs);
+  console.log(t.sort((a,b)=>a-b));
+});"
+
+# Docker, for comparison
+docker pull python:3.12-alpine
+for i in $(seq 1 20); do
+  s=$(date +%s%N)
+  docker run --rm python:3.12-alpine python3 -c "print(1)" >/dev/null
+  e=$(date +%s%N)
+  echo $(( (e - s) / 1000000 ))
+done</code></pre>
+
+  <div class="page-nav">
+    <a class="prev" href="languages.html"><span class="dir">Previous</span>&larr; Languages</a>
+    <a class="next" href="security.html"><span class="dir">Next</span>Security &rarr;</a>
+  </div>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <span>MIT licensed</span>
+    <a href="https://github.com/ayazdoruck/sandbin">github.com/ayazdoruck/sandbin</a>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -413,6 +413,40 @@ button .hint {
   margin-top: 2px;
 }
 
+.bench-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.bench-label {
+  width: 64px;
+  flex: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.bench-track {
+  flex: 1;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  height: 26px;
+}
+
+.bench-fill {
+  background: var(--fg);
+  height: 100%;
+}
+
+.bench-value {
+  width: 68px;
+  flex: none;
+  text-align: right;
+  font-weight: 600;
+  font-size: 13px;
+}
+
 .feature-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -451,6 +485,7 @@ button .hint {
 
 .demo-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -484,6 +519,12 @@ button .hint {
   height: 6px;
   border-radius: 50%;
   background: var(--muted);
+}
+
+.demo-note {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
 }
 
 .page-nav {

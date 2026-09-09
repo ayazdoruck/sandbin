@@ -17,6 +17,7 @@
       <a href="architecture.html">architecture</a>
       <a href="api.html">api</a>
       <a href="languages.html">languages</a>
+      <a href="benchmarks.html">benchmarks</a>
       <a href="security.html">security</a>
       <a href="testing.html">testing</a>
       <a class="icon-link" href="https://github.com/ayazdoruck/sandbin" aria-label="View source on GitHub">
@@ -59,7 +60,7 @@
   <div class="demo-tabs" id="demo-tabs"></div>
   <pre><code id="demo-code"></code></pre>
   <div class="controls">
-    <span></span>
+    <span id="demo-note" class="demo-note"></span>
     <button id="demo-run">run<span class="hint">&#9654;</span></button>
   </div>
   <div id="demo-output" class="output"></div>
@@ -95,6 +96,19 @@
     start and lets the same code run somewhere as small as a phone.
   </p>
 
+  <p>Measured on the same machine, back to back, not estimated:</p>
+  <div class="bench-row">
+    <div class="bench-label">sandbin</div>
+    <div class="bench-track"><div class="bench-fill" style="width: 5.7%"></div></div>
+    <div class="bench-value">21 ms</div>
+  </div>
+  <div class="bench-row">
+    <div class="bench-label">Docker</div>
+    <div class="bench-track"><div class="bench-fill" style="width: 100%"></div></div>
+    <div class="bench-value">369 ms</div>
+  </div>
+  <p><strong>17.6&times; faster</strong>, median of 20 runs each. <a href="benchmarks.html">Full methodology and raw samples &rarr;</a></p>
+
   <h2>Read more</h2>
   <div class="grid-cols-2">
     <div class="card">
@@ -110,8 +124,16 @@
       <p>Python, Bash, Node.js and C. How a compiled language gets sandboxed twice.</p>
     </div>
     <div class="card">
+      <h3><a href="benchmarks.html" class="no-underline">Benchmarks &rarr;</a></h3>
+      <p>17.6&times; faster than Docker, measured, with raw samples and the exact commands to reproduce it.</p>
+    </div>
+    <div class="card">
       <h3><a href="security.html" class="no-underline">Security &rarr;</a></h3>
       <p>The threat model, stated plainly, and the real bugs found building this.</p>
+    </div>
+    <div class="card">
+      <h3><a href="testing.html" class="no-underline">Testing &rarr;</a></h3>
+      <p>Every case asserts on evidence the guest can't fake, not its own claims.</p>
     </div>
   </div>
 

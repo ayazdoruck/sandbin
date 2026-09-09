@@ -62,4 +62,24 @@ const DEMOS = {
       oomKills: 0, pidsMaxHits: 0,
     },
   },
+
+  breakout: {
+    label: 'breakout attempt',
+    language: 'python',
+    note: 'paced for readability — the real run took 27ms start to finish',
+    code: "import ctypes\nlibc = ctypes.CDLL(None, use_errno=True)\n\ndef attempt(name, fn):\n    r = fn()\n    err = ctypes.get_errno()\n    print(f'[{name}] blocked (errno {err})' if r == -1 else f'[{name}] SUCCEEDED - this would be bad')\n\nprint('attempting to break out of the sandbox, four ways:')\nattempt('ptrace a sibling process',      lambda: libc.ptrace(0, 0, 0, 0))\nattempt('mount a filesystem',            lambda: libc.mount(b'none', b'/tmp', b'tmpfs', 0, 0))\nattempt('create a nested user namespace',lambda: libc.unshare(0x10000000))\nattempt('io_uring_setup',                lambda: libc.syscall(425, 8, 0))\nprint('still contained.')",
+    events: [
+      { t: 0, type: 'started' },
+      { t: 30, type: 'chunk', stream: 'stdout', text: 'attempting to break out of the sandbox, four ways:\n' },
+      { t: 430, type: 'chunk', stream: 'stdout', text: '[ptrace a sibling process] blocked (errno 1)\n' },
+      { t: 830, type: 'chunk', stream: 'stdout', text: '[mount a filesystem] blocked (errno 1)\n' },
+      { t: 1230, type: 'chunk', stream: 'stdout', text: '[create a nested user namespace] blocked (errno 1)\n' },
+      { t: 1630, type: 'chunk', stream: 'stdout', text: '[io_uring_setup] blocked (errno 1)\n' },
+      { t: 2030, type: 'chunk', stream: 'stdout', text: 'still contained.\n' },
+    ],
+    result: {
+      verdict: 'ok', exitCode: 0, durationMs: 27, cpuMs: 20, peakBytes: 5173248,
+      oomKills: 0, pidsMaxHits: 0,
+    },
+  },
 };

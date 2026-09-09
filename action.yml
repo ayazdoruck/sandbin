@@ -137,8 +137,10 @@ runs:
         [ -n "$SANDBIN_TIMEOUT" ] && args+=(--timeout "$SANDBIN_TIMEOUT")
         [ -n "$SANDBIN_PIDS" ] && args+=(--pids "$SANDBIN_PIDS")
 
+        # Local sandbox execution needs cgroup access, same as this
+        # project's own CI: sudo, with PATH preserved so node resolves.
         result_file="$(mktemp)"
-        node "${{ github.action_path }}/bin/sandbin.mjs" "${args[@]}" > "$result_file"
+        sudo env "PATH=$PATH" node "${{ github.action_path }}/bin/sandbin.mjs" "${args[@]}" > "$result_file"
 
         SANDBIN_RESULT_FILE="$result_file" node --input-type=module -e '
           import { readFileSync, appendFileSync } from "node:fs";

@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
@@ -51,8 +51,42 @@ const STATIC_ROUTES = {
   '/metrics.js': { file: 'metrics.js', type: 'text/javascript; charset=utf-8' },
 };
 
+// Plain `===` on secrets compared against attacker-supplied input leaks
+// timing information byte-by-byte (it short-circuits at the first
+// mismatch) — a real, if slow, remote side-channel against the metrics
+// password. timingSafeEqual needs equal-length buffers, so a length
+// mismatch is handled by still running it against a same-length dummy
+// rather than returning early — the length itself leaks either way (this
+// is standard practice, not a length-hiding claim), but the actual byte
+// comparison no longer does for anything of the right length.
+function safeEqual(a, b) {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) {
+    timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return timingSafeEqual(bufA, bufB);
+}
+
+// application/json isn't a CORS-safelisted content type — a cross-origin
+// fetch() carrying it is forced onto the preflight path, and since this
+// server never answers OPTIONS or sends Access-Control-Allow-Origin, the
+// browser never sends the real request at all. Without this check, a
+// foreign page could send Content-Type: text/plain (safelisted, no
+// preflight) with a JSON-shaped body and have it parsed exactly the same
+// — every visitor's browser silently submitting runs under their own IP,
+// with nothing about the request itself distinguishing it from one the
+// site's own frontend made. Confirmed end to end before this existed: a
+// POST with Content-Type: text/plain and Origin: https://evil.example
+// was accepted (202) and queued like any other request.
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
+    const contentType = req.headers['content-type'] ?? '';
+    if (!/^application\/json\b/i.test(contentType)) {
+      reject(new Error('content-type must be application/json'));
+      return;
+    }
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
@@ -105,7 +139,12 @@ export function createServer({
     const decoded = Buffer.from(encoded, 'base64').toString('utf8');
     const sep = decoded.indexOf(':');
     if (sep === -1) return false;
-    return decoded.slice(0, sep) === metricsAuth.user && decoded.slice(sep + 1) === metricsAuth.pass;
+    // Both comparisons always run, not `a && b` — short-circuiting on the
+    // username would itself be a timing signal for whether it was right,
+    // skipping the password check entirely on that path.
+    const userOk = safeEqual(decoded.slice(0, sep), metricsAuth.user);
+    const passOk = safeEqual(decoded.slice(sep + 1), metricsAuth.pass);
+    return userOk && passOk;
   }
 
   function requireMetricsAuth(req, res) {

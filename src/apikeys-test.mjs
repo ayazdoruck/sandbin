@@ -57,6 +57,26 @@ async function testUnknownKeyReturnsNull() {
   });
 }
 
+async function testLoadRejectsExpiredKeyBeforeSweepEverRuns() {
+  return withStore(async (store, dir) => {
+    const issued = await store.issue();
+    const filePath = path.join(dir, `${issued.key}.json`);
+    const record = JSON.parse(await readFile(filePath, 'utf8'));
+    record.createdAt = Date.now() - 5000;
+    await writeFile(filePath, JSON.stringify(record));
+
+    // sweep() is never called here — load() itself must refuse a key past
+    // its own ttlMs, not rely on the hourly sweep having deleted the file
+    // first.
+    const loaded = await store.load(issued.key);
+    return {
+      name: 'load rejects an expired key even before sweep ever runs',
+      pass: loaded === null,
+      detail: JSON.stringify(loaded),
+    };
+  }, { ttlMs: 1000 });
+}
+
 async function testTwoIssuedKeysAreDistinct() {
   return withStore(async (store) => {
     const a = await store.issue();
@@ -96,6 +116,7 @@ const CASES = [
   testIssuedKeyRespectsCustomQuota,
   testLoadRoundtrips,
   testUnknownKeyReturnsNull,
+  testLoadRejectsExpiredKeyBeforeSweepEverRuns,
   testTwoIssuedKeysAreDistinct,
   testSweepRemovesOnlyExpiredKeys,
 ];

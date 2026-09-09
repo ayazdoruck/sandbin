@@ -284,6 +284,28 @@ async function testBadRequestReturns400() {
   });
 }
 
+async function testNonJsonContentTypeIsRejectedAsCsrfVector() {
+  return withServer({}, async (baseUrl) => {
+    // text/plain is CORS-safelisted — a foreign page can send it
+    // cross-origin with no preflight at all, no Access-Control-Allow-*
+    // needed anywhere on this server. Before the content-type check
+    // existed, a JSON-shaped body under that header was parsed exactly
+    // like a real application/json request, meaning any site a victim
+    // visited could silently submit runs under the victim's own IP.
+    const res = await post(
+      baseUrl,
+      '/runs',
+      { language: 'python', code: 'print(1)' },
+      { 'content-type': 'text/plain', origin: 'https://evil.example' }
+    );
+    return {
+      name: 'a non-application/json content-type is rejected, closing the CSRF-shaped submission path',
+      pass: res.status === 400 && res.body.verdict === 'bad_request',
+      detail: JSON.stringify(res.body),
+    };
+  });
+}
+
 async function testApiKeyHeaderTraversalDoesNotGrantElevatedQuota() {
   return withServer({}, async (baseUrl) => {
     const fs = await import('node:fs/promises');
@@ -483,6 +505,7 @@ const CASES = [
   testInteractiveStdin,
   testQueueFullReturns429,
   testBadRequestReturns400,
+  testNonJsonContentTypeIsRejectedAsCsrfVector,
   testApiKeyHeaderTraversalDoesNotGrantElevatedQuota,
   testUnverifiedKeyHeaderCannotBypassMaxPerKey,
   testKeyUsageRejectsPathTraversal,

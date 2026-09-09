@@ -16,12 +16,24 @@ export function createApiKeyStore({ dir, requestsPerHour = DEFAULT_REQUESTS_PER_
     return record;
   }
 
-  async function load(key) {
+  async function load(key, { now = Date.now() } = {}) {
+    let record;
     try {
-      return JSON.parse(await readFile(filePath(key), 'utf8'));
+      record = JSON.parse(await readFile(filePath(key), 'utf8'));
     } catch {
       return null;
     }
+    // sweep() only runs hourly — without this check, a key past its own
+    // ttlMs still loads (and grants its full quota) for up to that whole
+    // interval after expiring, since nothing had actually re-checked
+    // createdAt at the point of use. permalinks.mjs already gets this
+    // right; this mirrors it exactly instead of relying on the sweep
+    // alone to have deleted the file in time.
+    if (now - record.createdAt > ttlMs) {
+      await unlink(filePath(key)).catch(() => {});
+      return null;
+    }
+    return record;
   }
 
   // Unlike permalinks.mjs, which this deliberately mirrors, nothing here

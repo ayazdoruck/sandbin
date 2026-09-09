@@ -841,10 +841,132 @@ the code:**
   calls across a simulated `policy.bpf` mtime change — the second call
   now recompiles instead of trusting the first result forever.
 
-109/109 tests passing (was 95) — 14 new adversarial/regression cases
+103/103 tests passing (was 95) — 8 new adversarial/regression cases
 across `test:sandbox`, `test:server`, `test:ratelimit` and
 `test:apikeys`, each added specifically to keep one of the bugs above
 from coming back silently.
+
+## Phase 17 addendum — TOCTOU, a timing side-channel, and a CSRF-shaped
+gap the first pass didn't reach (done)
+
+The original request also asked specifically about TOCTOU and about what
+changes if this sits on the public internet. Phase 17 named both in its
+framing but didn't give either a dedicated, reproduced pass — this closes
+that out, plus two things found by reading the rest of the surface with
+the same scrutiny.
+
+**A systematic TOCTOU sweep — one real bug found:**
+
+- `ratelimit.mjs`'s `check()` and `queue.mjs`'s `submit()` both read a
+  counter and act on it (increment, or admit/reject) with no `await`
+  between the two — impossible to race, since nothing else can run
+  mid-function on Node's single-threaded event loop. Confirmed by reading
+  both, not assumed from "it's probably fine, it's JS."
+- `attachSocket()`'s finished-check, socket-cap-check, and
+  `record.sockets.add()` are the same story — one synchronous block, no
+  yield point for a concurrent `ticket.result.then()` callback to land in
+  between and flip `record.status` mid-check.
+- **`apikeys.mjs`'s `load()` never actually checked TTL — it relied
+  entirely on the hourly `sweep()` having already deleted the file.**
+  `permalinks.mjs`'s `load()` (which `apikeys.mjs` was written to
+  mirror) checks `now - record.savedAt > ttlMs` inline before ever
+  returning a record; `apikeys.mjs`'s `load()` skipped that check
+  entirely and just returned whatever it read. A key just past its
+  90-day TTL kept working, at full quota, for up to an hour after
+  expiring — the gap between "sweep runs" and "the record's own
+  timestamp says it's dead." Confirmed by backdating a key past `ttlMs`
+  and loading it with `sweep()` never once called: it loaded fine.
+  Fixed by adding the same inline check `permalinks.mjs` already had.
+- Both disk-backed stores' `sweep()` racing a concurrent `load()`'s own
+  `unlink()` on the same file was checked too — both wrap the delete in
+  `.catch(() => {})` / a try/catch that treats "already gone" as
+  unremarkable, so this was never anything more than a benign race with
+  the filesystem, not a bug.
+
+**A timing side-channel in the metrics Basic Auth check, fixed.**
+`metricsAuthorized()` compared the decoded username and password with
+plain `===`, which short-circuits at the first mismatched byte —
+a real, if slow, remote timing signal for guessing the metrics password
+one byte at a time. Fixed with `crypto.timingSafeEqual`, and both the
+username and password checks now always run rather than `a && b`
+short-circuiting on the username alone (which would itself leak whether
+the username guess was right, independent of the password).
+
+**A CSRF-shaped path into `POST /runs` via a CORS-safelisted
+Content-Type, fixed.** `readJsonBody()` never checked the request's own
+`Content-Type` header — it parsed whatever bytes arrived as JSON
+regardless of what the header declared. `application/json` isn't
+CORS-safelisted, so a genuine cross-origin `fetch()` with that header
+gets forced onto the preflight path and blocked, since this server never
+answers `OPTIONS` or sends `Access-Control-Allow-Origin`. But
+`text/plain` *is* safelisted — no preflight required — and nothing
+stopped a JSON-shaped body from arriving under that header instead.
+Confirmed directly: a `POST /runs` with `Content-Type: text/plain` and
+`Origin: https://evil.example` was accepted (202) and queued exactly
+like a same-origin request. Any page a visitor happened to have open
+could have silently submitted runs under that visitor's own IP — not a
+privilege escalation (there's no session to hijack, and the opaque
+no-cors response can't be read back), but a real request-forgery /
+queue-and-rate-limit-abuse vector with no legitimate reason to allow it.
+Fixed by requiring `Content-Type: application/json` before parsing;
+confirmed the three real callers (`bin/sandbin.mjs`, `public/app.js`,
+`src/loadtest.mjs`) already send it.
+
+**Compile-vs-execute sandbox gap, checked and confirmed already
+correct.** The concern was that C/Go compilation might run under a
+different, weaker sandbox than the resulting binary's execution. Reading
+`sandbox.mjs`'s `run()`: the compile step (`spec.compile`) and the
+execution step both go through the exact same `spawnInSandbox()` — same
+`buildBwrapArgs`, same `--seccomp` fd, same cgroup mechanism. The only
+difference is `COMPILE_LIMITS` (a fixed, non-attacker-controlled object,
+sized for compiling one small file rather than running the result) and
+`boxWritable: true` so the compiler can write its output into `/box`.
+No separate, less-restricted path exists.
+
+**What actually changes if this sits on the public internet — written
+down instead of left implicit:**
+
+- Anonymous, unauthenticated arbitrary code execution is the deliberate
+  feature, not an oversight — the isolation is the entire security
+  model for that path, gated only by the anonymous rate limit and
+  per-IP concurrency. Anyone deploying this publicly should understand
+  that plainly, not discover it later.
+- **This server speaks plain HTTP, not TLS.** Deploying it directly on
+  the public internet means every request — including `X-Sandbin-Key`
+  — travels in cleartext. It needs a TLS-terminating reverse proxy
+  (nginx, Caddy, a cloud load balancer) in front for any real
+  deployment; nothing in this codebase does that itself, and nothing
+  should try to badly.
+- **Rate limiting and `maxPerKey` key off `req.socket.remoteAddress`
+  directly.** That's correct only when this process sees the real
+  client's TCP connection. Behind a reverse proxy, every request arrives
+  from the proxy's own address — every real visitor collapses into one
+  shared bucket unless the proxy's real-IP header is both trusted and
+  parsed. Deliberately *not* implemented here: blindly trusting
+  `X-Forwarded-For` from the client is itself a spoofing vector — a
+  value sandbin can't tell apart from one an attacker set directly —
+  and doing it correctly requires knowing, per deployment, which hop is
+  actually the trusted proxy. That's real, varies by operator, and
+  isn't something to guess at in-app; it's called out here as a genuine
+  limitation instead.
+- **Permalinks are public by design, unguessable but unauthenticated.**
+  A finished run's `/r/:id/data` is fetchable by anyone with the link —
+  `id` is a `randomUUID()` (122 bits), not brute-forceable, but there's
+  no owner check and no way to un-share one. Anything typed into code or
+  stdin becomes a link anyone who gets it can read for 30 days. That's
+  the intended feature (shareable permalinks), but worth being explicit
+  that "shareable" and "not secret" are the same property here.
+- `/metrics` being open by default (rather than requiring
+  `SANDBIN_METRICS_USER`/`SANDBIN_METRICS_PASS`) was already flagged at
+  process startup with a console warning before this pass; that stays
+  as-is, just noted here for completeness.
+
+105/105 tests passing (was 103) — the TOCTOU sweep found and fixed one
+real bug (`apikeys.mjs` load-time TTL), plus one CSRF regression test
+for the Content-Type check. The timing side-channel fix has no test of
+its own — a timing assertion doesn't belong in a CI suite — but the
+existing Basic Auth accept/reject tests already cover its functional
+behavior unchanged.
 
 ## What's left
 

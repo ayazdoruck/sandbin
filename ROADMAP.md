@@ -532,6 +532,32 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   correctness, and belongs alongside the existing benchmarks rather than
   gating CI on wall-clock numbers that will legitimately vary by machine
 
+## Phase 16 addendum — the go-cache fix wasn't actually the whole fix
+
+The `process.cwd()` → `os.tmpdir()` move (above) was real and necessary,
+but CI kept intermittently failing on `go: compiles and runs`
+specifically, roughly one push in three, even after it landed. No warm-up
+error ever printed — the fix from the same phase that made warm-up
+failures always log had nothing to say, because the warm-up wasn't
+failing. It was warming the wrong thing.
+
+The warm-up program was `package main; func main() {}` — no imports. It
+only ever forced the bare runtime into the cache. Every real Go test case
+imports `fmt` (all three of them do; two also pull in `net` or `time`),
+and `fmt`'s own dependency tree (`errors`, `os`, `reflect`, `syscall`,
+more) was still completely cold the first time any of them actually ran.
+On this machine that cold compile finishes comfortably inside the compile
+sandbox's limits — fast CPU, nothing else contending for it. On a shared,
+variable-performance GitHub-hosted runner, it sometimes didn't, and hit
+the exact `pids.max` failure the warm-up exists to prevent.
+
+Fixed by warming what's actually used: the warm-up program now imports
+and genuinely uses `fmt`, `net` and `time`, matching the adversarial
+suite's own real dependency footprint instead of the smallest program
+that happens to compile. Verified with real signal, not a single green
+run: 4 consecutive CI runs after the fix (`gh run rerun`, watched to
+completion each time), against roughly 1-in-3 failing before it.
+
 ## Phase 15 — GitHub Action (done)
 
 - `action.yml` at the repo root, a composite action so any workflow can

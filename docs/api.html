@@ -172,6 +172,20 @@
     nothing more.
   </p>
 
+  <h2>Metrics</h2>
+  <p>
+    <code>GET /metrics</code> is a live dashboard of the server process
+    itself; <code>GET /metrics/data</code> is the JSON it renders from
+    &mdash; submitted/accepted/rejected counts, finished runs by verdict
+    and by language, average duration/CPU/peak memory, live queue depth,
+    and API keys issued. Both reset on restart (in-memory counters, no
+    database) and are open by default. Set both
+    <code>SANDBIN_METRICS_USER</code> and <code>SANDBIN_METRICS_PASS</code>
+    to require HTTP Basic Auth instead &mdash; a <code>401</code> with
+    <code>WWW-Authenticate: Basic</code> otherwise, which a browser's own
+    native prompt handles without any frontend changes.
+  </p>
+
   <div class="page-nav">
     <a class="prev" href="architecture"><span class="dir">Previous</span>&larr; Architecture</a>
     <a class="next" href="languages"><span class="dir">Next</span>Languages &rarr;</a>

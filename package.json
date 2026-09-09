@@ -17,6 +17,7 @@
     "test:metrics": "node src/metrics-test.mjs",
     "test:server": "node src/server-test.mjs",
     "test:cli": "node src/cli-test.mjs",
+    "loadtest": "node src/loadtest.mjs",
     "start": "node src/server.mjs"
   },
   "engines": {

@@ -77,13 +77,12 @@ docker run --rm python:3.12-alpine python3 -c "print(1)"</code></pre>
   <p>
     This measures exactly one thing: the latency of going from "here is some
     code" to "it's running," for the smallest possible workload, on one
-    machine, once. It does not measure sustained throughput, Docker's much
-    larger ecosystem and orchestration tooling, or how either scales under
-    heavy concurrent load &mdash; sandbin's own concurrency behavior is
-    covered separately in the <a href="testing">queue tests</a>, not
-    here. The gap exists because Docker pays for a daemon round-trip, image
-    layer resolution and full container lifecycle machinery that sandbin's
-    direct <code>bwrap</code> + cgroup approach simply doesn't have to.
+    machine, once. It does not measure sustained throughput or Docker's much
+    larger ecosystem and orchestration tooling &mdash; sandbin's own
+    concurrency behavior is measured separately, below, not here. The gap
+    exists because Docker pays for a daemon round-trip, image layer
+    resolution and full container lifecycle machinery that sandbin's direct
+    <code>bwrap</code> + cgroup approach simply doesn't have to.
   </p>
 
   <h3>Reproduce it</h3>
@@ -107,6 +106,68 @@ for i in $(seq 1 20); do
   e=$(date +%s%N)
   echo $(( (e - s) / 1000000 ))
 done</code></pre>
+
+  <h2>Concurrency and throughput</h2>
+  <p>
+    The cold-start numbers above are one request at a time. This is the
+    queue under real concurrent load instead — many requests arriving
+    together, against a real spawned sandbox pipeline on an ephemeral port,
+    not a mock.
+  </p>
+
+  <h3>Sustained, at the default concurrency limit</h3>
+  <p>
+    100 requests, client concurrency held at 4 &mdash; the queue's own
+    default <code>maxConcurrency</code> &mdash; so every request starts
+    running as soon as a slot frees up and none of them ever sit in the
+    backlog:
+  </p>
+  <table>
+    <tr><th>total</th><th>accepted</th><th>rejected</th><th>throughput</th><th>p50</th><th>p95</th><th>max</th></tr>
+    <tr><td>100</td><td>100</td><td>0</td><td>120.5 req/s</td><td>32 ms</td><td>48 ms</td><td>72 ms</td></tr>
+  </table>
+  <p>Stable across repeated runs: 119&ndash;132 req/s, p50 27&ndash;32 ms, p95 46&ndash;48 ms.</p>
+
+  <h3>Overload, past capacity</h3>
+  <p>
+    60 requests fired at once, no client-side throttling, against a queue
+    deliberately shrunk to a 20-slot capacity
+    (<code>maxConcurrency=4</code> + <code>maxQueueLength=16</code>) &mdash;
+    specifically to force the global <code>queue_full</code> path rather
+    than the per-key <code>key_limit</code> one, isolated by raising
+    <code>maxPerKey</code> so it can't interfere:
+  </p>
+  <table>
+    <tr><th>total</th><th>accepted</th><th>rejected</th><th>rejected as</th><th>accepted p50</th><th>accepted p95</th><th>rejected latency</th></tr>
+    <tr><td>60</td><td>20</td><td>40</td><td><code>queue_full</code></td><td>139 ms</td><td>185 ms</td><td>36&ndash;62 ms</td></tr>
+  </table>
+  <p>
+    Exactly 20 accepted on every single run &mdash; the queue's own
+    accounting is precise, not approximate. All 40 rejections landed as
+    <code>queue_full</code>, never <code>key_limit</code>, confirming the
+    two really are independent paths rather than one silently masking the
+    other. And the rejections resolve in 36&ndash;62 ms &mdash; a caller
+    finds out it was turned away about as fast as one that got accepted
+    starts running, instead of being kept waiting only to be told no.
+  </p>
+
+  <h3>Method</h3>
+  <p>
+    Both scenarios spin up a real <code>createServer()</code> instance on
+    an ephemeral port and drive it exactly the way a real client would:
+    <code>POST /runs</code>, then one WebSocket connection per accepted run
+    waiting for its <code>finished</code> message. Rate limiting is raised
+    to a no-op ceiling for the run itself &mdash; every request here shares
+    one loopback IP, which would otherwise trip the real 20/hour anonymous
+    quota long before either scenario finished &mdash; since it's already
+    covered on its own in <a href="testing">the rate limit tests</a>.
+  </p>
+
+  <h3>Reproduce it</h3>
+  <pre><code>git clone https://github.com/ayazdoruck/sandbin.git
+cd sandbin
+npm install
+npm run loadtest</code></pre>
 
   <div class="page-nav">
     <a class="prev" href="languages"><span class="dir">Previous</span>&larr; Languages</a>

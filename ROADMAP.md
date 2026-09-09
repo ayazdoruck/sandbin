@@ -487,17 +487,56 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
 - 95/95 tests passing across eight suites (`test:server` gained the four
   auth cases; everything else unchanged)
 
+## Phase 14 — real load/concurrency benchmark (done)
+
+- `src/loadtest.mjs` (`npm run loadtest`) spins up a real
+  `createServer()` on an ephemeral port — no mocks — and drives it
+  exactly the way a real client would: `POST /runs`, then a WebSocket
+  connection per accepted run waiting for its `finished` message. Two
+  scenarios, chosen to answer two different questions the cold-start
+  comparison never could:
+  - **Sustained, at the default concurrency limit** — 100 requests,
+    client concurrency held at 4 (the queue's own default
+    `maxConcurrency`), so nothing ever sits in the backlog. Stable
+    across repeated runs: 119–132 req/s, p50 27–32ms, p95 46–48ms, 0
+    rejections
+  - **Overload, past capacity** — 60 requests fired at once with zero
+    client-side throttling, against a queue deliberately shrunk to a
+    20-slot capacity (`maxConcurrency=4` + `maxQueueLength=16`).
+    `maxPerKey` raised out of the way first, specifically to isolate the
+    *global* `queue_full` path from the *per-key* `key_limit` path
+    (already its own dedicated case in `queue-test.mjs`) rather than
+    conflating the two
+- one confound found and removed before the numbers meant anything:
+  every request in both scenarios shares one loopback IP, which would
+  trip the real 20/hour anonymous rate limit within the first second and
+  make the *rate limiter* the thing being measured instead of the queue.
+  `createServer({ anonymousRequestsPerHour: 100_000, ... })` — already a
+  constructor option, added for exactly this kind of test injection back
+  in Phase 9 — removes it as a variable without touching the rate
+  limiter itself
+- the overload scenario's own result is the more interesting finding:
+  **exactly 20 accepted on every single run** — the queue's accounting
+  under real concurrent arrival is precise, not approximate — and **all
+  40 rejections landed as `queue_full`, never `key_limit`**, confirming
+  the isolation actually worked rather than assuming it did. Rejections
+  also resolved in 36–62ms against accepted runs' 139ms median — a
+  caller finds out it was turned away about as fast as one that got
+  accepted starts running, not after being left waiting
+- run three times before writing anything down, specifically to check
+  the numbers weren't a one-off fluke before they went into
+  `docs/benchmarks.html`'s new "Concurrency and throughput" section
+  alongside the existing cold-start comparison, with the same
+  methodology/reproduce-it structure the rest of that page already uses
+- deliberately not part of `npm test` — it measures performance, not
+  correctness, and belongs alongside the existing benchmarks rather than
+  gating CI on wall-clock numbers that will legitimately vary by machine
+
 ## What's left
 
 Closing real gaps rather than adding breadth for its own sake, roughly in
 the order they're worth doing:
 
-- **Real load/concurrency benchmark.** The existing benchmarks page
-  measures one cold start against Docker's; it says nothing about
-  sustained throughput or latency under many simultaneous submissions.
-  Needs a real load-generation script against a running server and
-  honest numbers in `docs/benchmarks.html`, not just the queue's unit
-  tests (which prove correctness under load, not performance under it).
 - **Docs site sync.** `sandbin.vercel.app` (the `docs/` tree, deployed
   separately from the app itself) predates the CLI and `/metrics` —
   neither has a page there yet, and the language/test counts on the

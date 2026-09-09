@@ -463,6 +463,22 @@ internals:
 10/10 passed
 ```
 
+## Benchmarks
+
+```bash
+npm run loadtest
+```
+
+`npm test` proves correctness; this measures performance, against a real
+server on an ephemeral port, no mocks. Two scenarios: sustained throughput
+with client concurrency held at the queue's own default (`maxConcurrency`,
+100 requests, 0 rejections, ~120 req/s, p50 ~30ms), and overload (60
+requests fired at once with no client-side throttling, against a queue
+shrunk to a 20-slot capacity) — which lands exactly 20 accepted and 40
+`queue_full` on every run, rejected in 36-62ms rather than left waiting.
+Full methodology, raw numbers and the cold-start-vs-Docker comparison are
+on the [benchmarks page](https://sandbin.vercel.app/benchmarks).
+
 ## Requirements
 
 - Linux with cgroup v2 and unprivileged user namespaces
@@ -487,16 +503,18 @@ internals:
 
 ## Status
 
-All thirteen roadmap phases are done: namespace/cgroup/seccomp/rlimit
+All fourteen roadmap phases are done: namespace/cgroup/seccomp/rlimit
 isolation, a bounded and backpressured job queue, a streaming HTTP +
 WebSocket API, Python/Bash/Node/C support plus Go wherever a toolchain is
 available, a minimal browser frontend with a live resource graph and
 shareable permalinks, API keys with per-tier rate limits, a live
 `/metrics` dashboard (optionally behind Basic Auth), a `sandbin` CLI that
-runs either locally or against a remote server, and CI running all eight
-test suites on every push. `npm start` and open it, or `npm link` and run
-`sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was actually
-found building each phase — several real bugs, not just a feature checklist.
+runs either locally or against a remote server, a real concurrency/
+throughput benchmark (`npm run loadtest`) alongside the cold-start
+comparison, and CI running all eight test suites on every push. `npm
+start` and open it, or `npm link` and run `sandbin run script.py`. See
+[ROADMAP.md](ROADMAP.md) for what was actually found building each phase
+— several real bugs, not just a feature checklist.
 
 ### Known issues
 

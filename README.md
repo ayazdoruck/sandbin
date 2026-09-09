@@ -91,15 +91,16 @@ than assuming `/usr/bin/go`, since it's commonly managed by a version
 switcher (mise, asdf) that lives outside `/usr`. `go` is only added to the
 language list when that resolves to something real — clone the repo without
 Go installed and `language: 'go'` just isn't offered, no broken option left
-behind. Its build cache is a real, persistent, shared directory
-(`data/go-cache/`) rather than a fresh empty one per run: an empty cache
-means compiling the entire Go standard library from source before it can
-compile anything else, which blows straight through the compile sandbox's
-memory and file-size ceilings sized for a one-file program. It's warmed
-once, unsandboxed, the first time `sandbox.mjs` loads with Go available —
-after that, every real sandboxed compile only ever has its own small
-package left to build. `CGO_ENABLED=0` keeps Go's own network code from
-needing to shell out to `gcc` at compile time for cgo-based resolution.
+behind. Its build cache is a real, persistent, shared directory under the
+OS temp dir (not `process.cwd()` — see [ROADMAP.md](ROADMAP.md#phase-16--a-real-ci-only-bug-found-by-actually-checking-ci-done) for why)
+rather than a fresh empty one per run: an empty cache means compiling the
+entire Go standard library from source before it can compile anything
+else, which blows straight through the compile sandbox's memory and
+file-size ceilings sized for a one-file program. It's warmed once,
+unsandboxed, the first time `sandbox.mjs` loads with Go available — after
+that, every real sandboxed compile only ever has its own small package
+left to build. `CGO_ENABLED=0` keeps Go's own network code from needing
+to shell out to `gcc` at compile time for cgo-based resolution.
 
 `verdict` is one of `ok`, `error`, `timeout`, `memory_limit`, `output_limit`,
 `killed`, `setup_failed`, `compile_error`. The result also carries `cpuMs`,

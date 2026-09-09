@@ -143,13 +143,31 @@ const NODE_ROOT = path.dirname(path.dirname(NODE_BIN));</code></pre>
       pool hit the compile sandbox's <code>pids.max</code>, and past that,
       an intermediate archive for the <code>runtime</code> package alone
       exceeded the file-size ulimit. The fix is a real, persistent,
-      writable <code>GOCACHE</code> (<code>data/go-cache/</code>, shared
+      writable <code>GOCACHE</code> under the OS temp directory (shared
       across every run) warmed once with a trivial program
       <em>outside</em> the sandbox entirely, before any guest code ever
       runs. Every real compile after that only has its own small package
       left to build &mdash; the same "hello world" went from failing on a
       cold cache to a 14&nbsp;ms <code>ok</code> once it was warm, same
       limits, nothing else changed.
+    </p>
+  </div>
+  <div class="callout">
+    <span class="callout-label">The cache directory itself was briefly a CI-only bug</span>
+    <p>
+      It originally lived under <code>process.cwd()</code>, which worked
+      everywhere it was tested by hand — until real CI runs got checked
+      (not just assumed green from local <code>npm test</code> output),
+      eight pushes late. <code>bwrap</code>, under <code>--unshare-all</code>,
+      refused to bind that directory with a plain
+      <code>Can't find source path: Permission denied</code> &mdash; even
+      running as real root &mdash; because it sat under an ancestor
+      directory (a CI runner's home directory) that wasn't world-traversable
+      and was owned by a different user than the one running the sandboxed
+      process. Moving it under the OS temp directory, the same place the
+      per-run sandbox directory itself already lived, fixed it outright.
+      See <a href="https://github.com/ayazdoruck/sandbin/blob/main/ROADMAP.md#phase-16--a-real-ci-only-bug-found-by-actually-checking-ci-done">ROADMAP.md</a>
+      for the full investigation.
     </p>
   </div>
 

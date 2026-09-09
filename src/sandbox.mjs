@@ -26,7 +26,19 @@ function resolveToolchain(command, args) {
 // needing to know where node itself happens to be installed.
 const GO_ROOT = resolveToolchain('go', ['env', 'GOROOT']);
 const GO_BIN = GO_ROOT ? path.join(GO_ROOT, 'bin', 'go') : null;
-const GO_CACHE_DIR = path.join(process.cwd(), 'data', 'go-cache');
+
+// Not under process.cwd() — bwrap, running under --unshare-all, can fail to
+// bind a source path with a plain "Can't find source path: Permission
+// denied" if any ancestor directory in that path isn't world-traversable,
+// even when the caller is real root. This is invisible on a normal dev
+// machine (you own your own home directory outright) but bites in exactly
+// the CI setup this project's own workflow uses: the whole process runs as
+// root for cgroup access, while the checkout itself — and therefore
+// process.cwd() — is owned by an unprivileged runner user whose home
+// directory isn't world-readable. os.tmpdir() is universally traversable
+// regardless of that privilege mismatch, which is also exactly why hostDir
+// below already uses it rather than cwd.
+const GO_CACHE_DIR = path.join(tmpdir(), 'sandbin-go-cache');
 
 // A guest's own GOCACHE is this same directory every time (shared, writable
 // — see IMAGES.go below), but it starts out empty on a fresh checkout. With

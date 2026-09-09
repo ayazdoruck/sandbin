@@ -27,33 +27,5 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: TEMP DEBUG - go env and a raw sandboxed go run
-        run: |
-          mkdir -p data/go-cache
-          echo "--- owner/mode of the two source paths bwrap needs to bind ---"
-          stat -c '%U:%G %a %n' /usr/lib/go-1.22 "$PWD/data/go-cache"
-          echo "--- faithful repro: same flags buildBwrapArgs actually uses, as root ---"
-          sudo bash -c '
-            id
-            bwrap \
-              --unshare-all --die-with-parent --new-session --clearenv \
-              --setenv PATH /usr/bin --setenv HOME /tmp --setenv LANG C.UTF-8 \
-              --ro-bind /usr /usr \
-              --ro-bind /etc/ld.so.cache /etc/ld.so.cache \
-              --ro-bind /usr/lib/go-1.22 /usr/lib/go-1.22 \
-              --ro-bind "'"$PWD"'/data/go-cache" "'"$PWD"'/data/go-cache" \
-              --symlink usr/lib /lib --symlink usr/bin /bin \
-              --proc /proc --dev /dev \
-              -- /bin/true
-            echo "exit=$?"
-          '
-          echo "--- full sandbin run with SANDBIN_DEBUG ---"
-          sudo env "PATH=$PATH" SANDBIN_DEBUG=1 node -e "
-            import('./src/sandbox.mjs').then(async ({ run }) => {
-              const r = await run({ language: 'go', code: 'package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hi\")}' });
-              console.log(JSON.stringify(r, null, 2));
-            });
-          "
-
       - name: Run tests
         run: sudo env "PATH=$PATH" npm test

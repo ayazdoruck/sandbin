@@ -576,6 +576,59 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   the same trust boundary this project already accepts for `ci.yml`
   itself, which was never re-run locally either
 
+## Phase 16 — a real CI-only bug, found by actually checking CI (done)
+
+Not a new feature — a process failure worth recording as honestly as the
+bugs in every other phase, because it was one.
+
+- **the gap:** every phase from Go onward (Phases 10 through 15, eight
+  pushes) was reported here and to the person running this project as
+  "N/N tests passing" based entirely on local `npm test` output. Nobody
+  — meaning this assistant — actually checked whether GitHub's own CI
+  run for any of those pushes was green. It wasn't. Every single one of
+  them failed, silently, the whole time, on exactly the same three Go
+  test cases
+- **the actual bug**, once someone finally ran `gh run list` and looked:
+  `bwrap`, invoked with `--unshare-all`, failed the Go compile step with
+  a plain `bwrap: Can't find source path
+  .../data/go-cache: Permission denied` — even though the process calling
+  it was real root (`sudo env "PATH=$PATH" npm test`, required for cgroup
+  access in CI, same as always). Reproduced by hand outside Node entirely:
+  a raw `bwrap` invocation using the exact flags `buildBwrapArgs`
+  generates, run as root, binding the exact same path, failed the exact
+  same way — ruling out anything Node-specific and pointing straight at
+  bind-mount behavior under a freshly unshared user namespace
+- **why it only showed up in CI:** `GO_CACHE_DIR` was
+  `path.join(process.cwd(), 'data', 'go-cache')`. On a normal dev
+  machine, `npm test` runs as your own unprivileged user, who owns their
+  own home directory outright — no permission boundary anywhere in that
+  path ever needs crossing. In this project's own CI, the whole test
+  process runs as root (for cgroup access), but the checkout — and
+  therefore `process.cwd()` — belongs to the unprivileged `runner`
+  account, whose home directory isn't world-traversable. `bwrap` binding
+  a source path under an ancestor directory it can't traverse fails with
+  exactly this error, and evidently does so even for a caller that started
+  as real root, once that caller has unshared into a new user namespace —
+  confirmed by the side-by-side repro: binding `/usr/lib/go-1.22` (a
+  world-readable system path, root-owned, no restrictive ancestor
+  anywhere in it) worked fine under the identical flags; binding the
+  `runner`-owned path under `/home/runner` did not
+- **the fix:** move `GO_CACHE_DIR` off `process.cwd()` entirely, onto
+  `os.tmpdir()` — exactly where `run()`'s own per-request `hostDir`
+  already lived, for what turns out to be the same underlying reason
+  (`/tmp` is universally world-traversable, so this class of failure
+  structurally can't happen there). One line changed
+  (`src/sandbox.mjs`), confirmed with the real end-to-end repro before
+  the fix and the real CI run going green after it — not just local
+  `npm test`, which had shown 95/95 on every single one of the eight
+  broken pushes and therefore proved nothing about this bug at all
+- **the actual lesson, stated plainly:** this project's own testing
+  philosophy — evidence over narration, distrust anything not directly
+  observed — got applied rigorously to the *code* every single phase and
+  never once to the CI pipeline meant to gate it. A green local run and
+  a green CI run are different claims; only one of them was ever
+  actually checked before being reported as both
+
 ## What's left
 
 Closing real gaps rather than adding breadth for its own sake, roughly in

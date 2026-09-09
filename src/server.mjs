@@ -20,6 +20,22 @@ const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..',
 const DEFAULT_PERMALINK_DIR = path.join(process.cwd(), 'data', 'runs');
 const DEFAULT_APIKEY_DIR = path.join(process.cwd(), 'data', 'keys');
 
+// Both stores turn an id straight into `${id}.json` under a fixed directory
+// (path.join, which resolves ".." segments). The permalink and GET
+// /keys/:key routes happen to be safe today only because their `[^/]+`
+// URL regex can't capture a literal "/" — an accident of routing, not a
+// validation check. X-Sandbin-Key is a raw HTTP header, not a URL segment,
+// so that accident doesn't apply to it at all: an unvalidated value there
+// let `apiKeys.load()` read any .json file the process could reach,
+// confirmed with `X-Sandbin-Key: ../../elsewhere/file` resolving straight
+// to it. Both formats below match exactly what this app itself generates
+// (randomUUID() for runs, `sb_` + 32 hex chars for keys) — anything else
+// is rejected before it ever reaches a filesystem call, on every route
+// that accepts one of these ids, not just the one that was provably
+// exploitable.
+const RUN_ID_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const API_KEY_FORMAT = /^sb_[0-9a-f]{32}$/;
+
 const STATIC_ROUTES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
@@ -238,6 +254,11 @@ export function createServer({
 
     const permalinkDataMatch = req.method === 'GET' && /^\/r\/([^/]+)\/data$/.exec(req.url ?? '');
     if (permalinkDataMatch) {
+      if (!RUN_ID_FORMAT.test(permalinkDataMatch[1])) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'not found' }));
+        return;
+      }
       permalinks.load(permalinkDataMatch[1]).then((record) => {
         if (!record) {
           res.writeHead(404, { 'content-type': 'application/json' });
@@ -270,7 +291,12 @@ export function createServer({
       const concurrencyKey = headerKey || ip;
       readJsonBody(req)
         .then(async (body) => {
-          const issuedKey = headerKey ? await apiKeys.load(headerKey) : null;
+          // concurrencyKey above deliberately accepts any string — that's
+          // the documented, intended per-key partitioning behavior. This
+          // check gates a completely different thing: whether headerKey
+          // is even shaped like a key this app could have issued, before
+          // it's allowed anywhere near a filesystem lookup.
+          const issuedKey = headerKey && API_KEY_FORMAT.test(headerKey) ? await apiKeys.load(headerKey) : null;
           const rateLimitId = issuedKey ? `key:${issuedKey.key}` : `ip:${ip}`;
           const requestsPerHour = issuedKey ? issuedKey.requestsPerHour : anonymousRequestsPerHour;
           const outcome = submitRun(body, concurrencyKey, rateLimitId, requestsPerHour);
@@ -306,6 +332,11 @@ export function createServer({
 
     const keyUsageMatch = req.method === 'GET' && /^\/keys\/([^/]+)$/.exec(req.url ?? '');
     if (keyUsageMatch) {
+      if (!API_KEY_FORMAT.test(keyUsageMatch[1])) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'not found' }));
+        return;
+      }
       apiKeys.load(keyUsageMatch[1]).then((record) => {
         if (!record) {
           res.writeHead(404, { 'content-type': 'application/json' });
@@ -347,7 +378,15 @@ export function createServer({
     wss.handleUpgrade(req, socket, head, (ws) => attachSocket(match[1], ws));
   });
 
-  return { httpServer, queue, runs, permalinks };
+  return { httpServer, queue, runs, permalinks, apiKeys, rateLimiter, keyIssuanceLimiter };
+}
+
+function sweepAll({ permalinks, apiKeys, rateLimiter, keyIssuanceLimiter }) {
+  permalinks.sweep().catch(() => {});
+  apiKeys.sweep().catch(() => {});
+  // in-memory, synchronous, can't throw the way the disk-backed sweeps can
+  rateLimiter.sweep();
+  keyIssuanceLimiter.sweep();
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -355,9 +394,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const metricsUser = process.env.SANDBIN_METRICS_USER;
   const metricsPass = process.env.SANDBIN_METRICS_PASS;
   const metricsAuth = metricsUser && metricsPass ? { user: metricsUser, pass: metricsPass } : null;
-  const { httpServer, permalinks } = createServer({ metricsAuth });
-  permalinks.sweep().catch(() => {});
-  setInterval(() => permalinks.sweep().catch(() => {}), SWEEP_INTERVAL_MS).unref();
+  const server = createServer({ metricsAuth });
+  const { httpServer } = server;
+  sweepAll(server);
+  setInterval(() => sweepAll(server), SWEEP_INTERVAL_MS).unref();
   httpServer.listen(port, () => {
     console.log(`sandbin listening on :${port}`);
     if (!metricsAuth) console.log('sandbin: /metrics is open — set SANDBIN_METRICS_USER and SANDBIN_METRICS_PASS to require Basic Auth');

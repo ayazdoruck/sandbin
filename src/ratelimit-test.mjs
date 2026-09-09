@@ -59,12 +59,35 @@ function testPeekDoesNotConsumeASlot() {
   };
 }
 
+function testSweepRemovesOnlyExpiredBuckets() {
+  const limiter = createRateLimiter({ windowMs: 1000 });
+  const start = Date.now();
+  for (let i = 0; i < 50; i++) limiter.check(`old-${i}`, 20, { now: start });
+  limiter.check('fresh', 20, { now: start + 1500 });
+
+  const removedTooEarly = limiter.sweep({ now: start + 500 });
+  const removed = limiter.sweep({ now: start + 1500 });
+  const oldIsFreshAgain = limiter.peek('old-0', 20, { now: start + 1600 });
+  const freshSurvived = limiter.peek('fresh', 20, { now: start + 1600 });
+
+  return {
+    name: 'sweep removes only buckets past their own resetAt, never a live one',
+    pass:
+      removedTooEarly === 0 &&
+      removed === 50 &&
+      oldIsFreshAgain.count === 0 &&
+      freshSurvived.count === 1,
+    detail: `tooEarly=${removedTooEarly} removed=${removed} oldReset=${JSON.stringify(oldIsFreshAgain)} freshSurvived=${JSON.stringify(freshSurvived)}`,
+  };
+}
+
 const CASES = [
   testAllowsUpToTheLimit,
   testBlocksOnceOverTheLimit,
   testIdsAreIndependent,
   testResetsAfterTheWindowPasses,
   testPeekDoesNotConsumeASlot,
+  testSweepRemovesOnlyExpiredBuckets,
 ];
 
 let passed = 0;

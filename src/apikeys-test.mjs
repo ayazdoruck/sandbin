@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createApiKeyStore } from './apikeys.mjs';
@@ -6,7 +6,7 @@ import { createApiKeyStore } from './apikeys.mjs';
 async function withStore(fn, opts = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'sandbin-apikeys-'));
   try {
-    return await fn(createApiKeyStore({ dir, ...opts }));
+    return await fn(createApiKeyStore({ dir, ...opts }), dir);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -69,12 +69,35 @@ async function testTwoIssuedKeysAreDistinct() {
   });
 }
 
+async function testSweepRemovesOnlyExpiredKeys() {
+  return withStore(async (store, dir) => {
+    const fresh = await store.issue();
+    const old = await store.issue();
+
+    const oldPath = path.join(dir, `${old.key}.json`);
+    const oldRecord = JSON.parse(await readFile(oldPath, 'utf8'));
+    oldRecord.createdAt = Date.now() - 5000;
+    await writeFile(oldPath, JSON.stringify(oldRecord));
+
+    const removed = await store.sweep();
+    const freshStillLoads = await store.load(fresh.key);
+    const oldIsGone = await store.load(old.key);
+
+    return {
+      name: 'sweep removes keys past their TTL, leaves ones still within it',
+      pass: removed === 1 && freshStillLoads?.key === fresh.key && oldIsGone === null,
+      detail: `removed=${removed} freshStillLoads=${JSON.stringify(freshStillLoads)} oldIsGone=${oldIsGone}`,
+    };
+  }, { ttlMs: 1000 });
+}
+
 const CASES = [
   testIssuedKeyHasExpectedShape,
   testIssuedKeyRespectsCustomQuota,
   testLoadRoundtrips,
   testUnknownKeyReturnsNull,
   testTwoIssuedKeysAreDistinct,
+  testSweepRemovesOnlyExpiredKeys,
 ];
 
 let passed = 0;

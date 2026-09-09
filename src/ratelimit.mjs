@@ -28,5 +28,24 @@ export function createRateLimiter({ windowMs = DEFAULT_WINDOW_MS } = {}) {
     return { count: existing.count, remaining: Math.max(0, limit - existing.count), resetAt: existing.resetAt };
   }
 
-  return { check, peek };
+  // buckets never removed themselves — every distinct id (IP address, or
+  // an issued key) that has ever called check() stayed in this Map for the
+  // life of the process, whether or not its window had long since expired.
+  // Since id is attacker-influenced (any IP, freely rotated on IPv6),
+  // that's unbounded heap growth for the cost of ordinary requests, not
+  // something that needs a bug to trigger. Removing anything past its own
+  // resetAt is always safe: a ended window carries no state worth keeping,
+  // and a fresh bucket gets created on the next check() regardless.
+  function sweep({ now = Date.now() } = {}) {
+    let removed = 0;
+    for (const [id, bucket] of buckets) {
+      if (now >= bucket.resetAt) {
+        buckets.delete(id);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  return { check, peek, sweep };
 }

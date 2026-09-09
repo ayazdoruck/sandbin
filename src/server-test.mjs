@@ -284,6 +284,58 @@ async function testBadRequestReturns400() {
   });
 }
 
+async function testApiKeyHeaderTraversalDoesNotGrantElevatedQuota() {
+  return withServer({}, async (baseUrl) => {
+    const fs = await import('node:fs/promises');
+    const outsideDir = await mkdtemp(path.join(tmpdir(), 'sandbin-outside-'));
+    await fs.writeFile(
+      path.join(outsideDir, 'canary.json'),
+      JSON.stringify({ key: 'STOLEN', requestsPerHour: 999999 })
+    );
+    const traversalHeader = `../${path.basename(outsideDir)}/canary`;
+
+    // If X-Sandbin-Key ever reaches apiKeys.load() unvalidated again, this
+    // resolves outside apiKeyDir to the canary above and every one of
+    // these requests gets accepted under its fake 999999/hour quota. With
+    // the header format checked first, they all fall back to the real
+    // anonymous limit instead.
+    const results = [];
+    for (let i = 0; i < 5; i++) {
+      const res = await post(baseUrl, '/runs', { language: 'python', code: 'print(1)' }, { 'x-sandbin-key': traversalHeader });
+      results.push(res.body.accepted ? 'accepted' : res.body.verdict);
+    }
+    await rm(outsideDir, { recursive: true, force: true }).catch(() => {});
+
+    return {
+      name: 'X-Sandbin-Key path traversal does not grant an elevated rate-limit quota',
+      pass: results.filter((r) => r === 'rate_limited').length > 0,
+      detail: results.join(','),
+    };
+  }, { anonymousRequestsPerHour: 3 });
+}
+
+async function testKeyUsageRejectsPathTraversal() {
+  return withServer({}, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/keys/${encodeURIComponent('../etc/passwd')}`);
+    return {
+      name: 'GET /keys/:key rejects a traversal-shaped key as 404, never touches the filesystem',
+      pass: res.status === 404,
+      detail: `status=${res.status}`,
+    };
+  });
+}
+
+async function testPermalinkDataRejectsPathTraversal() {
+  return withServer({}, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/r/${encodeURIComponent('../../etc/passwd')}/data`);
+    return {
+      name: 'GET /r/:id/data rejects a non-UUID id as 404, never touches the filesystem',
+      pass: res.status === 404,
+      detail: `status=${res.status}`,
+    };
+  });
+}
+
 async function testReconnectAfterFinish() {
   return withServer({}, async (baseUrl) => {
     const submit = await post(baseUrl, '/runs', { language: 'python', code: 'print("done")' });
@@ -404,6 +456,9 @@ const CASES = [
   testInteractiveStdin,
   testQueueFullReturns429,
   testBadRequestReturns400,
+  testApiKeyHeaderTraversalDoesNotGrantElevatedQuota,
+  testKeyUsageRejectsPathTraversal,
+  testPermalinkDataRejectsPathTraversal,
   testReconnectAfterFinish,
   testUnknownRunIdReturnsError,
   testMetricsReflectARealFinishedRun,

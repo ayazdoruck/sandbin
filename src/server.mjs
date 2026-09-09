@@ -59,6 +59,7 @@ export function createServer({
   apiKeyDir = DEFAULT_APIKEY_DIR,
   rateLimitWindowMs,
   anonymousRequestsPerHour = ANONYMOUS_REQUESTS_PER_HOUR,
+  metricsAuth = null,
 } = {}) {
   const queue = createQueue(queueLimits);
   const runs = new Map();
@@ -67,6 +68,30 @@ export function createServer({
   const rateLimiter = createRateLimiter(rateLimitWindowMs ? { windowMs: rateLimitWindowMs } : {});
   const keyIssuanceLimiter = createRateLimiter(rateLimitWindowMs ? { windowMs: rateLimitWindowMs } : {});
   const metrics = createMetricsStore();
+
+  // Metrics expose operational detail (rejection counts, per-language usage,
+  // live queue depth) that's fine on a personal dev box but not something a
+  // publicly reachable instance should hand out to anyone who asks. Basic
+  // Auth needs nothing from the frontend — the browser's own native prompt
+  // handles it — and unset (the default) keeps today's open behavior so a
+  // fresh clone still just works.
+  function metricsAuthorized(req) {
+    if (!metricsAuth) return true;
+    const header = req.headers['authorization'] ?? '';
+    const [scheme, encoded] = header.split(' ');
+    if (scheme !== 'Basic' || !encoded) return false;
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    const sep = decoded.indexOf(':');
+    if (sep === -1) return false;
+    return decoded.slice(0, sep) === metricsAuth.user && decoded.slice(sep + 1) === metricsAuth.pass;
+  }
+
+  function requireMetricsAuth(req, res) {
+    if (metricsAuthorized(req)) return true;
+    res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Basic realm="sandbin metrics"' });
+    res.end(JSON.stringify({ message: 'unauthorized' }));
+    return false;
+  }
 
   function broadcast(record, message) {
     const payload = JSON.stringify(message);
@@ -195,6 +220,8 @@ export function createServer({
   }
 
   const httpServer = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/metrics' && !requireMetricsAuth(req, res)) return;
+
     if (req.method === 'GET' && STATIC_ROUTES[req.url]) {
       const route = STATIC_ROUTES[req.url];
       readFile(path.join(PUBLIC_DIR, route.file))
@@ -299,6 +326,7 @@ export function createServer({
     }
 
     if (req.method === 'GET' && req.url === '/metrics/data') {
+      if (!requireMetricsAuth(req, res)) return;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ...metrics.snapshot(), queue: queue.stats() }));
       return;
@@ -324,8 +352,14 @@ export function createServer({
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT ?? 8080);
-  const { httpServer, permalinks } = createServer();
+  const metricsUser = process.env.SANDBIN_METRICS_USER;
+  const metricsPass = process.env.SANDBIN_METRICS_PASS;
+  const metricsAuth = metricsUser && metricsPass ? { user: metricsUser, pass: metricsPass } : null;
+  const { httpServer, permalinks } = createServer({ metricsAuth });
   permalinks.sweep().catch(() => {});
   setInterval(() => permalinks.sweep().catch(() => {}), SWEEP_INTERVAL_MS).unref();
-  httpServer.listen(port, () => console.log(`sandbin listening on :${port}`));
+  httpServer.listen(port, () => {
+    console.log(`sandbin listening on :${port}`);
+    if (!metricsAuth) console.log('sandbin: /metrics is open — set SANDBIN_METRICS_USER and SANDBIN_METRICS_PASS to require Basic Auth');
+  });
 }

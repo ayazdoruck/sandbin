@@ -459,3 +459,66 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   pick it up with no manual reload
 - 91/91 tests passing across eight suites (`test:metrics`, 6 cases, and
   two new cases in `test:server`; everything else unchanged)
+
+## Phase 13 — Basic Auth on `/metrics` (done)
+
+- the dashboard added in Phase 12 was open by default, which is fine for
+  a local clone and wrong for anything a stranger can reach: rejection
+  counts, per-language usage, and exactly how many API keys have been
+  issued are real operational detail, not something to hand out for free
+- `SANDBIN_METRICS_USER` + `SANDBIN_METRICS_PASS`, both required to
+  enable, gate both `GET /metrics` and `GET /metrics/data` behind HTTP
+  Basic Auth (`metricsAuth: { user, pass }` on `createServer()`,
+  test-injectable the same way `permalinkDir`/`apiKeyDir` already are).
+  Unset — the default — keeps today's open behavior, logged plainly at
+  startup (`/metrics is open — set SANDBIN_METRICS_USER and
+  SANDBIN_METRICS_PASS...`) rather than silently
+- Basic Auth specifically because it needed zero frontend changes: the
+  browser's own native credential prompt handles `/metrics` the moment
+  the server returns `401` with `WWW-Authenticate: Basic`, and
+  `curl -u user:pass` handles `/metrics/data` — no login page, no token
+  storage, no JS to write or maintain
+- four cases added to `server-test.mjs`, each spinning up a real server
+  with `metricsAuth` configured: no credentials → 401 with the
+  `WWW-Authenticate` header present, wrong credentials → 401 (not
+  silently treated as "no auth configured"), correct credentials → 200
+  with real data, and the HTML page gated exactly like the JSON route
+  rather than just the data endpoint
+- 95/95 tests passing across eight suites (`test:server` gained the four
+  auth cases; everything else unchanged)
+
+## What's left
+
+Closing real gaps rather than adding breadth for its own sake, roughly in
+the order they're worth doing:
+
+- **Real load/concurrency benchmark.** The existing benchmarks page
+  measures one cold start against Docker's; it says nothing about
+  sustained throughput or latency under many simultaneous submissions.
+  Needs a real load-generation script against a running server and
+  honest numbers in `docs/benchmarks.html`, not just the queue's unit
+  tests (which prove correctness under load, not performance under it).
+- **Docs site sync.** `sandbin.vercel.app` (the `docs/` tree, deployed
+  separately from the app itself) predates the CLI and `/metrics` —
+  neither has a page there yet, and the language/test counts on the
+  existing pages are stale.
+- **GitHub Action.** A reusable Action wrapping `sandbin run` (or the
+  HTTP API directly) so a CI workflow anywhere can execute untrusted
+  code through this sandbox as a step, without vendoring the CLI.
+- **Embeddable widget.** A small script + iframe another site could drop
+  in to embed a working sandbin playground, reusing the existing
+  streaming API rather than building a second one.
+- **Rust, revisited.** Still shelved from Phase 10 — the actual blocker
+  was diagnostic, not architectural: confirming the hypothesis (`rustc`
+  issuing a raw syscall no libc entry point catches) needs `strace` or
+  root-level tracing that wasn't available where this was investigated.
+  Worth another pass specifically if that access becomes available, not
+  worth guessing at a fix without it.
+
+Deliberately *not* on this list: horizontal scaling / multi-instance
+support. That would mean moving the queue, rate limiter and metrics off
+in-process state and onto something shared (Redis or equivalent) — a real
+architectural shift away from "single process, no database, no external
+dependency beyond `ws`," which is a stated design choice here, not an
+oversight. Worth reconsidering only if this ever needs to run as more
+than one process for real, not preemptively.

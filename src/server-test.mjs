@@ -342,6 +342,53 @@ async function testUnknownRunIdReturnsError() {
   });
 }
 
+async function testMetricsRequiresAuthWhenConfigured() {
+  return withServer({}, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/metrics/data`);
+    return {
+      name: 'GET /metrics/data returns 401 with no credentials when metrics auth is configured',
+      pass: res.status === 401 && (res.headers.get('www-authenticate') ?? '').includes('Basic'),
+      detail: `status=${res.status} www-authenticate=${res.headers.get('www-authenticate')}`,
+    };
+  }, { metricsAuth: { user: 'admin', pass: 'secret' } });
+}
+
+async function testMetricsPageAlsoRequiresAuthWhenConfigured() {
+  return withServer({}, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/metrics`);
+    return {
+      name: 'GET /metrics (the HTML page, not just the data route) also requires auth when configured',
+      pass: res.status === 401,
+      detail: `status=${res.status}`,
+    };
+  }, { metricsAuth: { user: 'admin', pass: 'secret' } });
+}
+
+async function testMetricsRejectsWrongCredentials() {
+  return withServer({}, async (baseUrl) => {
+    const wrong = Buffer.from('admin:wrong').toString('base64');
+    const res = await fetch(`${baseUrl}/metrics/data`, { headers: { authorization: `Basic ${wrong}` } });
+    return {
+      name: 'GET /metrics/data rejects incorrect credentials, not just missing ones',
+      pass: res.status === 401,
+      detail: `status=${res.status}`,
+    };
+  }, { metricsAuth: { user: 'admin', pass: 'secret' } });
+}
+
+async function testMetricsAcceptsCorrectBasicAuth() {
+  return withServer({}, async (baseUrl) => {
+    const correct = Buffer.from('admin:secret').toString('base64');
+    const res = await fetch(`${baseUrl}/metrics/data`, { headers: { authorization: `Basic ${correct}` } });
+    const body = await res.json();
+    return {
+      name: 'GET /metrics/data returns real data with correct Basic credentials',
+      pass: res.status === 200 && typeof body.submitted === 'number',
+      detail: `status=${res.status} submitted=${body.submitted}`,
+    };
+  }, { metricsAuth: { user: 'admin', pass: 'secret' } });
+}
+
 const CASES = [
   testBasicRunStreams,
   testChunksArriveIncrementally,
@@ -361,6 +408,10 @@ const CASES = [
   testUnknownRunIdReturnsError,
   testMetricsReflectARealFinishedRun,
   testMetricsCountRejectionsAndKeyIssuance,
+  testMetricsRequiresAuthWhenConfigured,
+  testMetricsPageAlsoRequiresAuthWhenConfigured,
+  testMetricsRejectsWrongCredentials,
+  testMetricsAcceptsCorrectBasicAuth,
 ];
 
 let passed = 0;

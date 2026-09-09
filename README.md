@@ -248,6 +248,19 @@ numbers rather than duplicating that state.
 curl -s localhost:8080/metrics/data | python3 -m json.tool
 ```
 
+It's open by default — fine for a local clone, not for anything reachable
+by strangers, since it hands out real operational detail (rejection
+counts, per-language usage, exactly how many API keys have been issued).
+Set both `SANDBIN_METRICS_USER` and `SANDBIN_METRICS_PASS` to put it
+behind HTTP Basic Auth instead — the browser's own native credential
+prompt handles the HTML page, and `curl -u user:pass` handles the JSON
+route, so nothing on the frontend had to change to support it:
+
+```bash
+SANDBIN_METRICS_USER=admin SANDBIN_METRICS_PASS=secret npm start
+curl -u admin:secret localhost:8080/metrics/data
+```
+
 ### CLI
 
 ```bash
@@ -423,8 +436,12 @@ ephemeral port — no mocks — and drives it end to end:
 ✅ unknown run id over WS returns an error event        [{"type":"error",...}]
 ✅ GET /metrics/data reflects a real finished run, not just a submission
 ✅ GET /metrics/data counts a rejection and a key issuance from real requests
+✅ GET /metrics/data returns 401 with no credentials when metrics auth is configured
+✅ GET /metrics (the HTML page, not just the data route) also requires auth when configured
+✅ GET /metrics/data rejects incorrect credentials, not just missing ones
+✅ GET /metrics/data returns real data with correct Basic credentials
 
-18/18 passed
+22/22 passed
 ```
 
 `npm run test:cli` spawns the built binary as a real subprocess, both in
@@ -470,14 +487,15 @@ internals:
 
 ## Status
 
-All twelve roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
-a bounded and backpressured job queue, a streaming HTTP + WebSocket API,
-Python/Bash/Node/C support plus Go wherever a toolchain is available, a
-minimal browser frontend with a live resource graph and shareable
-permalinks, API keys with per-tier rate limits, a live `/metrics` dashboard,
-a `sandbin` CLI that runs either locally or against a remote server, and CI
-running all eight test suites on every push. `npm start` and open it, or
-`npm link` and run `sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was actually
+All thirteen roadmap phases are done: namespace/cgroup/seccomp/rlimit
+isolation, a bounded and backpressured job queue, a streaming HTTP +
+WebSocket API, Python/Bash/Node/C support plus Go wherever a toolchain is
+available, a minimal browser frontend with a live resource graph and
+shareable permalinks, API keys with per-tier rate limits, a live
+`/metrics` dashboard (optionally behind Basic Auth), a `sandbin` CLI that
+runs either locally or against a remote server, and CI running all eight
+test suites on every push. `npm start` and open it, or `npm link` and run
+`sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was actually
 found building each phase — several real bugs, not just a feature checklist.
 
 ### Known issues

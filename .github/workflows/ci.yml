@@ -27,5 +27,18 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      - name: TEMP DEBUG - go env and a raw sandboxed go run
+        run: |
+          which go
+          go env GOROOT
+          go env GOPATH
+          ls -la "$(go env GOROOT)/bin"
+          sudo env "PATH=$PATH" SANDBIN_DEBUG=1 node -e "
+            import('./src/sandbox.mjs').then(async ({ run }) => {
+              const r = await run({ language: 'go', code: 'package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hi\")}' });
+              console.log(JSON.stringify(r, null, 2));
+            });
+          "
+
       - name: Run tests
         run: sudo env "PATH=$PATH" npm test

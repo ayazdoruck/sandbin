@@ -21,7 +21,7 @@ jobs:
 
       - name: Install bubblewrap, libseccomp, gcc and go
         run: |
-          sudo apt-get update
+          sudo apt-get update || true
           sudo apt-get install -y bubblewrap libseccomp-dev gcc golang-go
 
       - name: Allow unprivileged user namespaces

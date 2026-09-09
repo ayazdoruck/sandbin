@@ -230,3 +230,37 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   5 cases, plus 3 new server-level cases covering the HTTP surface and the
   save-before-broadcast race specifically
 - 54/54 tests passing across four suites
+
+## Phase 9 — API keys and rate limits (done)
+
+- two new, deliberately tiny modules, each doing one thing: `src/ratelimit.mjs`
+  is a fixed-window counter (`check`/`peek`, per-id buckets, injectable
+  clock), `src/apikeys.mjs` is a disk-backed key store (`issue`/`load`,
+  same one-JSON-file-per-record pattern as `permalinks.mjs`) — no new
+  dependency, no database, for either
+- anonymous callers (keyed by IP) get 20 runs/hour; `POST /keys` issues a
+  free `sb_`-prefixed key with a 200/hour quota, no signup; `GET /keys/:key`
+  reports the current window without consuming it
+- deliberately did not overload `X-Sandbin-Key`'s existing job: that header
+  already partitions `maxPerKey` *concurrency* (Phase 2), a completely
+  different axis from an hourly request *quota*. An arbitrary caller-chosen
+  string still works for concurrency partitioning at the anonymous
+  rate-limit tier exactly as before — it only unlocks the higher tier when
+  it happens to match a key actually issued by `POST /keys`. Nothing about
+  the existing documented header behavior changed
+- key issuance is itself rate-limited by IP (5/hour) — the obvious hole in
+  a "free API key, no signup" design is minting unlimited fresh keys to
+  keep resetting your own quota, so the mint endpoint sits behind the same
+  limiter it's handing out access to
+- the rate-limit check runs first in `submitRun`, before language/code
+  validation — a client hammering the endpoint with garbage payloads still
+  gets throttled, not free retries because their request happened to be
+  malformed
+- tested at both layers: `test:ratelimit` (5 cases) and `test:apikeys`
+  (5 cases) exercise the modules directly with independent ids and
+  injected clocks; `test:server` adds 5 HTTP-level cases including the one
+  that actually matters — a request carrying a real issued key succeeds
+  even after the anonymous per-IP bucket for the same test client is
+  already exhausted, proving the two tiers are genuinely separate buckets
+  and not just a relabeled version of the same counter
+- 69/69 tests passing across six suites

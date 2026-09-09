@@ -76,15 +76,17 @@
     </p>
   </div>
 
-  <h2>Four suites</h2>
+  <h2>Six suites</h2>
   <table>
     <tr><th>Suite</th><th>Command</th><th>Covers</th></tr>
     <tr><td>Sandbox</td><td><code>npm run test:sandbox</code></td><td>32 adversarial cases against real spawned sandboxes: namespace escapes, resource ceilings, seccomp denials, per-language checks</td></tr>
     <tr><td>Queue</td><td><code>npm run test:queue</code></td><td>6 cases against real spawned runs: bounded concurrency observed under load, backpressure firing exactly at capacity, a crashing job still freeing its slot</td></tr>
     <tr><td>Permalinks</td><td><code>npm run test:permalinks</code></td><td>5 cases against a real temp directory: save/load roundtrip, TTL expiry and sweep driven by an injected clock, not a real 30-day wait</td></tr>
-    <tr><td>Server</td><td><code>npm run test:server</code></td><td>11 cases against a real HTTP+WebSocket server on an ephemeral port: incremental delivery, live resource stats, permalink persistence with no save/read race, interactive stdin, backpressure over HTTP, reconnect-after-finish replay</td></tr>
+    <tr><td>Rate limit</td><td><code>npm run test:ratelimit</code></td><td>5 cases against the fixed-window counter directly: independent ids, window reset driven by an injected clock</td></tr>
+    <tr><td>API keys</td><td><code>npm run test:apikeys</code></td><td>5 cases against the on-disk key store: issuance shape, custom quotas, unknown-key handling</td></tr>
+    <tr><td>Server</td><td><code>npm run test:server</code></td><td>16 cases against a real HTTP+WebSocket server on an ephemeral port: incremental delivery, live resource stats, permalink persistence with no save/read race, API key issuance and usage, per-tier rate limiting, interactive stdin, backpressure over HTTP, reconnect-after-finish replay</td></tr>
   </table>
-  <p><code>npm test</code> runs all four in sequence &mdash; the same command CI runs on every push, with a 5-minute job timeout so a genuine hang fails fast instead of consuming CI budget silently.</p>
+  <p><code>npm test</code> runs all six in sequence &mdash; the same command CI runs on every push, with a 5-minute job timeout so a genuine hang fails fast instead of consuming CI budget silently.</p>
 
   <h2>Run it yourself</h2>
   <pre><code>git clone https://github.com/ayazdoruck/sandbin.git

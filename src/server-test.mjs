@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from './server.mjs';
 
-function post(baseUrl, path, body) {
+function post(baseUrl, path, body, headers = {}) {
   return fetch(`${baseUrl}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
   }).then(async (res) => ({ status: res.status, body: await res.json() }));
 }
@@ -27,9 +27,10 @@ function streamRun(baseUrl, runId, { onEvent } = {}) {
   });
 }
 
-async function withServer(queueLimits, fn) {
+async function withServer(queueLimits, fn, serverOptions = {}) {
   const permalinkDir = await mkdtemp(path.join(tmpdir(), 'sandbin-permalinks-'));
-  const { httpServer } = createServer({ queueLimits, permalinkDir });
+  const apiKeyDir = await mkdtemp(path.join(tmpdir(), 'sandbin-apikeys-'));
+  const { httpServer } = createServer({ queueLimits, permalinkDir, apiKeyDir, ...serverOptions });
   await new Promise((resolve) => httpServer.listen(0, resolve));
   const port = httpServer.address().port;
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -38,6 +39,7 @@ async function withServer(queueLimits, fn) {
   } finally {
     httpServer.close();
     await rm(permalinkDir, { recursive: true, force: true }).catch(() => {});
+    await rm(apiKeyDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -150,6 +152,88 @@ async function testUnknownPermalinkReturns404() {
   });
 }
 
+async function testApiKeyIssuance() {
+  return withServer({}, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/keys`, { method: 'POST' });
+    const body = await res.json();
+    return {
+      name: 'POST /keys issues an sb_-prefixed key with a quota',
+      pass: res.status === 201 && typeof body.key === 'string' && body.key.startsWith('sb_') && body.requestsPerHour > 0,
+      detail: JSON.stringify(body),
+    };
+  });
+}
+
+async function testApiKeyUsageEndpoint() {
+  return withServer({}, async (baseUrl) => {
+    const issueRes = await fetch(`${baseUrl}/keys`, { method: 'POST' });
+    const { key, requestsPerHour } = await issueRes.json();
+    const usageRes = await fetch(`${baseUrl}/keys/${key}`);
+    const usage = await usageRes.json();
+    return {
+      name: 'GET /keys/:key reports fresh, unused quota right after issuance',
+      pass: usageRes.status === 200 && usage.used === 0 && usage.remaining === requestsPerHour,
+      detail: JSON.stringify(usage),
+    };
+  });
+}
+
+async function testUnknownApiKeyReturns404() {
+  return withServer({}, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/keys/sb_not_a_real_key`);
+    return {
+      name: 'GET /keys/:key for an unissued key returns 404',
+      pass: res.status === 404,
+      detail: `status=${res.status}`,
+    };
+  });
+}
+
+async function testAnonymousRateLimitBlocksExcessRequests() {
+  return withServer(
+    {},
+    async (baseUrl) => {
+      const results = [];
+      for (let i = 0; i < 3; i++) {
+        results.push(await post(baseUrl, '/runs', { language: 'python', code: 'print(1)' }));
+      }
+      const statuses = results.map((r) => r.status);
+      const verdicts = results.map((r) => r.body.verdict ?? 'accepted');
+      return {
+        name: 'the request past the anonymous per-IP quota is rate_limited',
+        pass: statuses[0] === 202 && statuses[1] === 202 && statuses[2] === 429 && verdicts[2] === 'rate_limited',
+        detail: `statuses=${statuses.join(',')} verdicts=${verdicts.join(',')}`,
+      };
+    },
+    { anonymousRequestsPerHour: 2 }
+  );
+}
+
+async function testIssuedKeyHasItsOwnRateLimitBucket() {
+  return withServer(
+    {},
+    async (baseUrl) => {
+      const exhausted = await post(baseUrl, '/runs', { language: 'python', code: 'print(1)' });
+      const blocked = await post(baseUrl, '/runs', { language: 'python', code: 'print(1)' });
+
+      const { key } = await (await fetch(`${baseUrl}/keys`, { method: 'POST' })).json();
+      const withKey = await post(
+        baseUrl,
+        '/runs',
+        { language: 'python', code: 'print(1)' },
+        { 'x-sandbin-key': key }
+      );
+
+      return {
+        name: 'a request carrying an issued key is not throttled by the exhausted anonymous bucket',
+        pass: exhausted.status === 202 && blocked.status === 429 && withKey.status === 202,
+        detail: `exhausted=${exhausted.status} blocked=${blocked.status} withKey=${withKey.status}`,
+      };
+    },
+    { anonymousRequestsPerHour: 1 }
+  );
+}
+
 async function testInteractiveStdin() {
   return withServer({}, async (baseUrl) => {
     const submit = await post(baseUrl, '/runs', {
@@ -231,6 +315,11 @@ const CASES = [
   testPermalinkDataAvailableAfterFinish,
   testPermalinkPageServesHtml,
   testUnknownPermalinkReturns404,
+  testApiKeyIssuance,
+  testApiKeyUsageEndpoint,
+  testUnknownApiKeyReturns404,
+  testAnonymousRateLimitBlocksExcessRequests,
+  testIssuedKeyHasItsOwnRateLimitBucket,
   testInteractiveStdin,
   testQueueFullReturns429,
   testBadRequestReturns400,

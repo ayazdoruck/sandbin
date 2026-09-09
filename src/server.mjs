@@ -7,12 +7,17 @@ import { WebSocketServer } from 'ws';
 import { createQueue } from './queue.mjs';
 import { IMAGES } from './sandbox.mjs';
 import { createPermalinkStore } from './permalinks.mjs';
+import { createApiKeyStore } from './apikeys.mjs';
+import { createRateLimiter } from './ratelimit.mjs';
 
 const CLEANUP_DELAY_MS = 30_000;
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const ANONYMOUS_REQUESTS_PER_HOUR = 20;
+const KEY_ISSUANCE_PER_HOUR = 5;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const DEFAULT_PERMALINK_DIR = path.join(process.cwd(), 'data', 'runs');
+const DEFAULT_APIKEY_DIR = path.join(process.cwd(), 'data', 'keys');
 
 const STATIC_ROUTES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
@@ -45,10 +50,19 @@ function readJsonBody(req) {
   });
 }
 
-export function createServer({ queueLimits = {}, permalinkDir = DEFAULT_PERMALINK_DIR } = {}) {
+export function createServer({
+  queueLimits = {},
+  permalinkDir = DEFAULT_PERMALINK_DIR,
+  apiKeyDir = DEFAULT_APIKEY_DIR,
+  rateLimitWindowMs,
+  anonymousRequestsPerHour = ANONYMOUS_REQUESTS_PER_HOUR,
+} = {}) {
   const queue = createQueue(queueLimits);
   const runs = new Map();
   const permalinks = createPermalinkStore({ dir: permalinkDir });
+  const apiKeys = createApiKeyStore({ dir: apiKeyDir });
+  const rateLimiter = createRateLimiter(rateLimitWindowMs ? { windowMs: rateLimitWindowMs } : {});
+  const keyIssuanceLimiter = createRateLimiter(rateLimitWindowMs ? { windowMs: rateLimitWindowMs } : {});
 
   function broadcast(record, message) {
     const payload = JSON.stringify(message);
@@ -61,7 +75,16 @@ export function createServer({ queueLimits = {}, permalinkDir = DEFAULT_PERMALIN
     setTimeout(() => runs.delete(runId), CLEANUP_DELAY_MS).unref();
   }
 
-  function submitRun(body, key) {
+  function submitRun(body, key, rateLimitId, requestsPerHour) {
+    const limit = rateLimiter.check(rateLimitId, requestsPerHour);
+    if (!limit.allowed) {
+      return {
+        accepted: false,
+        verdict: 'rate_limited',
+        message: `rate limit exceeded (${requestsPerHour}/hour)`,
+        retryAfterMs: limit.resetAt - Date.now(),
+      };
+    }
     if (!IMAGES[body?.language]) {
       return { accepted: false, verdict: 'bad_request', message: `unknown language: ${body?.language}` };
     }
@@ -202,10 +225,15 @@ export function createServer({ queueLimits = {}, permalinkDir = DEFAULT_PERMALIN
     }
 
     if (req.method === 'POST' && req.url === '/runs') {
-      const key = req.headers['x-sandbin-key'] || req.socket.remoteAddress;
+      const ip = req.socket.remoteAddress;
+      const headerKey = req.headers['x-sandbin-key'];
+      const concurrencyKey = headerKey || ip;
       readJsonBody(req)
-        .then((body) => {
-          const outcome = submitRun(body, key);
+        .then(async (body) => {
+          const issuedKey = headerKey ? await apiKeys.load(headerKey) : null;
+          const rateLimitId = issuedKey ? `key:${issuedKey.key}` : `ip:${ip}`;
+          const requestsPerHour = issuedKey ? issuedKey.requestsPerHour : anonymousRequestsPerHour;
+          const outcome = submitRun(body, concurrencyKey, rateLimitId, requestsPerHour);
           const status = outcome.accepted ? 202 : outcome.verdict === 'bad_request' ? 400 : 429;
           res.writeHead(status, { 'content-type': 'application/json' });
           res.end(JSON.stringify(outcome));
@@ -216,6 +244,46 @@ export function createServer({ queueLimits = {}, permalinkDir = DEFAULT_PERMALIN
         });
       return;
     }
+
+    if (req.method === 'POST' && req.url === '/keys') {
+      const ip = req.socket.remoteAddress;
+      const limit = keyIssuanceLimiter.check(`ip:${ip}`, KEY_ISSUANCE_PER_HOUR);
+      if (!limit.allowed) {
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          message: `key issuance rate limit exceeded (${KEY_ISSUANCE_PER_HOUR}/hour)`,
+          retryAfterMs: limit.resetAt - Date.now(),
+        }));
+        return;
+      }
+      apiKeys.issue().then((record) => {
+        res.writeHead(201, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ key: record.key, requestsPerHour: record.requestsPerHour }));
+      });
+      return;
+    }
+
+    const keyUsageMatch = req.method === 'GET' && /^\/keys\/([^/]+)$/.exec(req.url ?? '');
+    if (keyUsageMatch) {
+      apiKeys.load(keyUsageMatch[1]).then((record) => {
+        if (!record) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ message: 'not found' }));
+          return;
+        }
+        const usage = rateLimiter.peek(`key:${record.key}`, record.requestsPerHour);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          key: record.key,
+          requestsPerHour: record.requestsPerHour,
+          used: usage.count,
+          remaining: usage.remaining,
+          resetAt: usage.resetAt,
+        }));
+      });
+      return;
+    }
+
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ message: 'not found' }));
   });

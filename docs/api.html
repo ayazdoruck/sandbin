@@ -49,10 +49,11 @@
   <p>
     A rejection has the same response shape with <code>accepted: false</code>
     and no <code>runId</code>: HTTP <strong>429</strong> for
-    <code>queue_full</code> or <code>key_limit</code>, <strong>400</strong>
-    for a malformed request (unknown language, missing code). The
-    submitter's <code>key</code> for per-key concurrency limiting is the
-    <code>X-Sandbin-Key</code> header if present, otherwise their IP.
+    <code>queue_full</code>, <code>key_limit</code> or
+    <code>rate_limited</code>, <strong>400</strong> for a malformed request
+    (unknown language, missing code). The submitter's <code>key</code> for
+    per-key concurrency limiting is the <code>X-Sandbin-Key</code> header if
+    present, otherwise their IP.
   </p>
 
   <h2>Watch it stream</h2>
@@ -123,6 +124,33 @@
     (<code>maxPerKey</code>). Once either cap is hit, <code>POST /runs</code>
     rejects immediately rather than accepting unbounded work or shrinking
     every run's resource limits to compensate.
+  </p>
+
+  <h2>API keys and rate limits</h2>
+  <p>
+    Anonymous callers, keyed by IP, get <strong>20 runs/hour</strong>.
+    <code>POST /keys</code> issues a free API key with a higher
+    <strong>200 runs/hour</strong> quota, no signup:
+  </p>
+  <pre><code>curl -s -X POST localhost:8080/keys
+# -&gt; {"key":"sb_...","requestsPerHour":200}</code></pre>
+  <p>
+    Send it back as <code>X-Sandbin-Key</code> on <code>POST /runs</code> to
+    run under that quota instead of the anonymous one.
+    <code>GET /keys/:key</code> reports the current window without
+    consuming it:
+  </p>
+  <pre><code>curl -s localhost:8080/keys/sb_...
+# -&gt; {"key":"sb_...","requestsPerHour":200,"used":3,"remaining":197,"resetAt":...}</code></pre>
+  <p>
+    The quota is a fixed one-hour window, tracked in memory and separate
+    from the <code>X-Sandbin-Key</code> header's other job of partitioning
+    <code>maxPerKey</code> concurrency: an arbitrary caller-chosen string
+    still works for concurrency partitioning at the anonymous rate-limit
+    tier, and only resolves to the higher tier when it matches a key
+    actually issued by <code>POST /keys</code>. Key issuance itself is
+    rate-limited by IP (5/hour) so it can't be used to mint unlimited fresh
+    quotas.
   </p>
 
   <h2>Permalinks</h2>

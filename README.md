@@ -146,9 +146,28 @@ curl -s -X POST localhost:8080/runs \
 ```
 
 A rejection looks the same shape, with `accepted: false` and no `runId` —
-HTTP 429 for `queue_full`/`key_limit`, 400 for a malformed request (unknown
-language, missing code). The submitter's `key` for per-key limiting is the
-`X-Sandbin-Key` header if present, otherwise their IP.
+HTTP 429 for `queue_full`/`key_limit`/`rate_limited`, 400 for a malformed
+request (unknown language, missing code). The submitter's `key` for
+per-key concurrency limiting is the `X-Sandbin-Key` header if present,
+otherwise their IP.
+
+**API keys and rate limits.** Anonymous callers, keyed by IP, get 20
+runs/hour. `POST /keys` issues a free key with a 200/hour quota, no
+signup:
+
+```bash
+curl -s -X POST localhost:8080/keys
+# -> {"key":"sb_...","requestsPerHour":200}
+```
+
+Send it back as `X-Sandbin-Key` on `POST /runs` to run under that quota
+instead. `GET /keys/:key` reports the current window without consuming
+it. The quota is a separate concern from that same header's existing job
+of partitioning `maxPerKey` concurrency — an arbitrary caller-chosen
+string still works for that, and only resolves to the higher rate-limit
+tier when it matches a key actually issued by `POST /keys`. Key issuance
+is itself rate-limited by IP (5/hour) so it can't be used to mint
+unlimited fresh quotas.
 
 **`GET /runs/:runId/stream`** (WebSocket) delivers the run's story as JSON
 messages, one per frame:
@@ -261,6 +280,31 @@ rather than actually waiting 30 days:
 5/5 passed
 ```
 
+`npm run test:ratelimit` and `npm run test:apikeys` cover the fixed-window
+counter and the on-disk key store directly — independent ids never
+interfere with each other, and a window reset is driven by an injected
+clock rather than actually waiting an hour:
+
+```
+✅ the first N requests within the limit are all allowed
+✅ the request past the limit is rejected, not silently allowed
+✅ one id being throttled does not affect a different id
+✅ a new window resets the count instead of accumulating forever
+✅ peek reports usage without counting as a request itself
+
+5/5 passed
+```
+
+```
+✅ an issued key is sb_-prefixed and carries a default quota
+✅ a store configured with a custom quota applies it to new keys
+✅ loading an issued key returns the same record
+✅ loading an unknown key returns null, not an error
+✅ two calls to issue produce two different keys
+
+5/5 passed
+```
+
 `npm run test:server` spins up the real HTTP + WebSocket server on an
 ephemeral port — no mocks — and drives it end to end:
 
@@ -271,13 +315,18 @@ ephemeral port — no mocks — and drives it end to end:
 ✅ GET /r/:id/data returns the saved run right after finish, no race
 ✅ GET /r/:id serves the permalink HTML page
 ✅ GET /r/:id/data for an unknown id returns 404
+✅ POST /keys issues an sb_-prefixed key with a quota
+✅ GET /keys/:key reports fresh, unused quota right after issuance
+✅ GET /keys/:key for an unissued key returns 404
+✅ the request past the anonymous per-IP quota is rate_limited     statuses=202,202,429
+✅ a request carrying an issued key is not throttled by the exhausted anonymous bucket
 ✅ interactive stdin: reply sent only after seeing the prompt name: hello ayaz
 ✅ queue_full over HTTP returns 429                     202,202,429,429
 ✅ unknown language returns 400 immediately             {"accepted":false,"verdict":"bad_request",...}
 ✅ reconnecting after finish replays the final result   finished
 ✅ unknown run id over WS returns an error event        [{"type":"error",...}]
 
-11/11 passed
+16/16 passed
 ```
 
 ## Requirements
@@ -301,13 +350,13 @@ ephemeral port — no mocks — and drives it end to end:
 
 ## Status
 
-All eight roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
+All nine roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
 a bounded and backpressured job queue, a streaming HTTP + WebSocket API,
 Python/Bash/Node/C support, a minimal browser frontend with a live resource
-graph and shareable permalinks, and CI running all four test suites on
-every push. `npm start` and open it. See [ROADMAP.md](ROADMAP.md) for what
-was actually found building each phase — several real bugs, not just a
-feature checklist.
+graph and shareable permalinks, API keys with per-tier rate limits, and CI
+running all six test suites on every push. `npm start` and open it. See
+[ROADMAP.md](ROADMAP.md) for what was actually found building each phase —
+several real bugs, not just a feature checklist.
 
 ### Known issues
 

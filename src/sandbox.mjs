@@ -47,10 +47,23 @@ const GO_CACHE_DIR = path.join(tmpdir(), 'sandbin-go-cache');
 // compile sandbox's file-size and memory ceilings sized for a one-file
 // program. Warm the shared cache once, outside the sandbox entirely, so
 // every real guest compile only ever has its own tiny package left to do.
+//
+// Importing fmt/net/time specifically, not an empty main(): a no-import
+// warm-up program only compiles the bare runtime, leaving fmt (and its own
+// dependency tree — errors, os, reflect, syscall...) still cold the first
+// time any real program actually imports it. That gap was invisible on a
+// fast, uncontended dev machine — the cold fmt compile finished within the
+// compile sandbox's limits anyway — but showed up intermittently in CI on
+// a slower or more contended runner as the exact pids.max/cold-cache
+// failure this function exists to prevent in the first place.
 function warmGoCache() {
   try {
     const dir = mkdtempSync(path.join(tmpdir(), 'sandbin-gowarm-'));
-    writeFileSync(path.join(dir, 'main.go'), 'package main\nfunc main() {}\n');
+    const warmupSource =
+      'package main\n' +
+      'import ("fmt"; "net"; "time")\n' +
+      'func main() { fmt.Println(time.Now(), net.ParseIP("127.0.0.1")) }\n';
+    writeFileSync(path.join(dir, 'main.go'), warmupSource);
     execFileSync(GO_BIN, ['build', '-o', path.join(dir, 'a.out'), path.join(dir, 'main.go')], {
       env: { ...process.env, GOCACHE: GO_CACHE_DIR, GOPATH: path.join(dir, 'gopath'), CGO_ENABLED: '0' },
       timeout: 180_000,

@@ -139,8 +139,12 @@ runs:
 
         # Local sandbox execution needs cgroup access, same as this
         # project's own CI: sudo, with PATH preserved so node resolves.
+        # The CLI itself exits 1 for any non-ok verdict, which — under the
+        # default `bash -e` these steps run with — would abort the script
+        # right here, before fail-on-error ever gets a say. || true defers
+        # that decision entirely to the writer step below.
         result_file="$(mktemp)"
-        sudo env "PATH=$PATH" node "${{ github.action_path }}/bin/sandbin.mjs" "${args[@]}" > "$result_file"
+        sudo env "PATH=$PATH" node "${{ github.action_path }}/bin/sandbin.mjs" "${args[@]}" > "$result_file" || true
 
         SANDBIN_RESULT_FILE="$result_file" node --input-type=module -e '
           import { readFileSync, appendFileSync } from "node:fs";

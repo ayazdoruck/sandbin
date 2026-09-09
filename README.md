@@ -230,6 +230,49 @@ enough to plot — fed straight off the `stats` WebSocket messages, nothing
 faked client-side. Every finished run gets a permalink shown right below
 its results, ready to copy and share.
 
+### CLI
+
+```bash
+npm link   # or: node bin/sandbin.mjs ...
+sandbin run script.py
+```
+
+Runs code straight through the sandbox, no server required — `sandbin`
+imports `sandbox.mjs` directly and calls `run()` itself, streaming stdout
+and stderr to the terminal live as they arrive, then printing a summary
+(verdict, duration, CPU, peak memory, exit code) once it finishes. The
+process exits `0` for verdict `ok`, `1` otherwise, so it's safe to use in
+scripts and CI.
+
+```bash
+sandbin run -l python -e 'print(1 + 1)'
+cat script.sh | sandbin run -l bash
+sandbin run main.go --json                    # full result object, no live streaming
+sandbin run server.js --server localhost:8080 # submit to a running server instead
+```
+
+Language is auto-detected from the file extension when a file is given;
+otherwise pass `-l/--language` explicitly. Without `--server`, `sandbin`
+runs locally and needs the same host requirements as `npm start` itself
+(bubblewrap, libseccomp, cgroup v2). With `--server <url>`, it instead
+submits over HTTP and streams the result back over the same WebSocket
+protocol the web frontend uses — useful for driving a sandbin instance
+running somewhere else. `-k/--key` (or `SANDBIN_KEY`) sends an issued API
+key along; `SANDBIN_SERVER` sets a default server so `--server` doesn't
+need repeating on every call.
+
+`sandbin languages` lists what the current host can actually run (`go`
+only appears if a toolchain was found). `sandbin keys create` and
+`sandbin keys status <key>` wrap `POST /keys` and `GET /keys/:key` against
+a running server. `sandbin --help` covers every flag, including the
+`--memory`/`--cpu`/`--timeout`/`--pids` limit overrides.
+
+A compile failure (`c`, `go`) is the one case with nothing to stream live —
+the compile phase runs before the execute phase that streaming is wired
+to — so the CLI prints the compiler's captured `stderr` in full once the
+result comes back, rather than a bare `verdict compile_error` with no
+explanation.
+
 ## Tests
 
 ```bash
@@ -348,6 +391,25 @@ ephemeral port — no mocks — and drives it end to end:
 16/16 passed
 ```
 
+`npm run test:cli` spawns the built binary as a real subprocess, both in
+local mode and against a real ephemeral server — no mocking the CLI's own
+internals:
+
+```
+✅ local: eval runs, streams stdout live, exits 0
+✅ local: guest exit(3) reports verdict error, cli exits 1 not 3
+✅ local: unknown language rejected with a clean message, not a stack trace
+✅ --json: prints one parseable result object with stdout and verdict
+✅ local: language auto-detected from the .py extension, no -l needed
+✅ languages: lists python as available on this host
+✅ local: c compile error prints the compiler diagnostic, not just a bare verdict
+✅ remote: run streams stdout over a real HTTP+WS server
+✅ remote: server-side rejection (bad_request) exits nonzero with the server's message
+✅ keys: create then status round-trips through a real server
+
+10/10 passed
+```
+
 ## Requirements
 
 - Linux with cgroup v2 and unprivileged user namespaces
@@ -372,14 +434,15 @@ ephemeral port — no mocks — and drives it end to end:
 
 ## Status
 
-All ten roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
+All eleven roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
 a bounded and backpressured job queue, a streaming HTTP + WebSocket API,
 Python/Bash/Node/C support plus Go wherever a toolchain is available, a
 minimal browser frontend with a live resource graph and shareable
-permalinks, API keys with per-tier rate limits, and CI running all six test
-suites on every push. `npm start` and open it. See
-[ROADMAP.md](ROADMAP.md) for what was actually found building each phase —
-several real bugs, not just a feature checklist.
+permalinks, API keys with per-tier rate limits, a `sandbin` CLI that runs
+either locally or against a remote server, and CI running all seven test
+suites on every push. `npm start` and open it, or `npm link` and run
+`sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was actually
+found building each phase — several real bugs, not just a feature checklist.
 
 ### Known issues
 

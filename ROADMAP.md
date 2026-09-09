@@ -354,3 +354,61 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
     actually resolved, not worked around with a guess
 - 73/73 tests passing across six suites (`test:sandbox` gained the four
   Go cases; everything else unchanged)
+
+## Phase 11 — `sandbin` CLI (done)
+
+- a real `bin/sandbin.mjs`, wired up as `package.json`'s `bin` entry so
+  `npm link` gives a `sandbin` on `PATH`. Two modes, one interface:
+  **local**, which imports `sandbox.mjs` directly and calls `run()` with no
+  server involved at all, and **remote** (`--server <url>`), which speaks
+  the exact HTTP + WebSocket protocol the browser frontend already speaks
+  — `POST /runs`, then stream `/runs/:id/stream` — so the CLI is a second,
+  independent client against the same API surface rather than a special
+  path of its own
+- local is the default on purpose, not remote: the more common case for
+  someone who already has the repo checked out is "run this one file
+  through the real sandbox right now," which needs nothing running and no
+  port to pick. `--server` (or `SANDBIN_SERVER`) switches the same command
+  over to hitting a sandbin instance running somewhere else, local or not
+- language is inferred from the file extension (`.py`, `.sh`/`.bash`,
+  `.js`/`.mjs`/`.cjs`, `.c`, `.go`) when a file is given, with `-l` to
+  override or supply it outright for `-e`/stdin input. Code can come from
+  a file, `-e/--eval`, or piped stdin — deliberately not from more than
+  one of those in the same invocation, no ambiguity about which wins
+- output streams live, stdout and stderr each to their own real stream, as
+  `chunk` events arrive — both in local mode (`onChunk` wired straight
+  into `run()`) and remote mode (the same WebSocket `chunk` messages the
+  frontend already renders). `--json` turns this off and prints the whole
+  result object instead, once, for scripting
+- one real gap found writing the adversarial test for it, not by
+  inspection: `run()`'s `onChunk` only ever covers the *execute* phase —
+  the compile phase (`c`, `go`) never gets the callback at all (see
+  `sandbox.mjs`'s two `spawnInSandbox` calls in `run()`). A compile
+  failure was streaming nothing and then printing a bare
+  `verdict compile_error` with zero indication of what the compiler
+  actually said — technically correct, practically useless. Fixed by
+  printing the result's own captured `stderr` in full for exactly the two
+  verdicts where the streamed callback wouldn't have shown it
+  (`compile_error`, `setup_failed`) — not a change to `sandbox.mjs`, the
+  result already carried the diagnostic, the CLI just wasn't showing it
+- exit code is `0` for verdict `ok`, `1` for anything else — deliberately
+  *not* a passthrough of the guest's own exit code (a guest exiting `3`
+  still means the sandbin CLI invocation itself succeeded at running it
+  and observing that; the verdict, printed to stderr alongside duration,
+  CPU and peak memory, is what actually failed). Kept scriptable: no
+  interactive stdin forwarding in this pass, `-i/--stdin <file>` (or `-`
+  for the CLI's own stdin, mutually exclusive with reading code from
+  stdin) covers the fixed-input case the API itself supports
+- `sandbin languages` and `sandbin keys create`/`keys status` round out
+  the surface — the first reads local `IMAGES` directly (so it reflects
+  this exact host, `go` included only if a toolchain was actually found),
+  the second two are thin wrappers over the existing `POST /keys` and
+  `GET /keys/:key` endpoints, no new server-side surface added for either
+- tested as a real subprocess, not by importing its functions — `cli-test.mjs`
+  spawns the actual `bin/sandbin.mjs` with `node`, both against `run()`
+  directly (local) and against a real `createServer()` on an ephemeral
+  port (remote), and asserts on captured stdout/stderr/exit code exactly
+  the way a real caller would observe them, including the guest-exit-3
+  case and the compile-error-shows-diagnostic fix above
+- 83/83 tests passing across seven suites (`test:cli`, 10 cases, is new;
+  everything else unchanged)

@@ -4,14 +4,18 @@
   "private": true,
   "description": "Run untrusted code safely, without Docker.",
   "type": "module",
+  "bin": {
+    "sandbin": "./bin/sandbin.mjs"
+  },
   "scripts": {
-    "test": "npm run test:sandbox && npm run test:queue && npm run test:permalinks && npm run test:ratelimit && npm run test:apikeys && npm run test:server",
+    "test": "npm run test:sandbox && npm run test:queue && npm run test:permalinks && npm run test:ratelimit && npm run test:apikeys && npm run test:server && npm run test:cli",
     "test:sandbox": "node src/attack-test.mjs",
     "test:queue": "node src/queue-test.mjs",
     "test:permalinks": "node src/permalinks-test.mjs",
     "test:ratelimit": "node src/ratelimit-test.mjs",
     "test:apikeys": "node src/apikeys-test.mjs",
     "test:server": "node src/server-test.mjs",
+    "test:cli": "node src/cli-test.mjs",
     "start": "node src/server.mjs"
   },
   "engines": {

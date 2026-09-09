@@ -11,7 +11,7 @@ dies, and the host doesn't notice.
 
 Cold start is about **20 ms**, and the whole thing runs as an ordinary user.
 
-**[Read the docs →](https://ayazdoruck.github.io/sandbin/)** — architecture,
+**[Read the docs →](https://sandbin.vercel.app/)** — architecture,
 API reference, per-language notes, and the real bugs found building this,
 written up in full.
 

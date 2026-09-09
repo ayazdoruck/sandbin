@@ -14,6 +14,12 @@ import { createMetricsStore } from './metrics.mjs';
 const CLEANUP_DELAY_MS = 30_000;
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+// POST /runs is rate-limited; opening a WebSocket to watch one isn't, and
+// never was — nothing stopped a caller from opening as many connections
+// to a single run as they liked. A legitimate client needs at most a
+// couple (the original tab, maybe a reconnect); this caps it well above
+// that without leaving it open-ended.
+const MAX_SOCKETS_PER_RUN = 10;
 const ANONYMOUS_REQUESTS_PER_HOUR = 20;
 const KEY_ISSUANCE_PER_HOUR = 5;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -213,6 +219,12 @@ export function createServer({
       return;
     }
 
+    if (record.sockets.size >= MAX_SOCKETS_PER_RUN) {
+      socket.send(JSON.stringify({ type: 'error', message: 'too many connections to this run' }));
+      socket.close();
+      return;
+    }
+
     if (record.status === 'running') {
       socket.send(JSON.stringify({ type: 'started' }));
       for (const chunk of record.chunks) socket.send(JSON.stringify({ type: 'chunk', ...chunk }));
@@ -288,15 +300,17 @@ export function createServer({
     if (req.method === 'POST' && req.url === '/runs') {
       const ip = req.socket.remoteAddress;
       const headerKey = req.headers['x-sandbin-key'];
-      const concurrencyKey = headerKey || ip;
       readJsonBody(req)
         .then(async (body) => {
-          // concurrencyKey above deliberately accepts any string — that's
-          // the documented, intended per-key partitioning behavior. This
-          // check gates a completely different thing: whether headerKey
-          // is even shaped like a key this app could have issued, before
-          // it's allowed anywhere near a filesystem lookup.
+          // headerKey is only trusted as its own concurrency partition
+          // once it's a *verified* issued key — an anonymous caller could
+          // otherwise defeat maxPerKey entirely by sending a fresh
+          // free-form string with every request, each one getting its own
+          // full budget. A verified key still partitions however its
+          // holder likes; anything else falls back to IP, which isn't
+          // something a single caller can mint a new one of per request.
           const issuedKey = headerKey && API_KEY_FORMAT.test(headerKey) ? await apiKeys.load(headerKey) : null;
+          const concurrencyKey = issuedKey ? headerKey : ip;
           const rateLimitId = issuedKey ? `key:${issuedKey.key}` : `ip:${ip}`;
           const requestsPerHour = issuedKey ? issuedKey.requestsPerHour : anonymousRequestsPerHour;
           const outcome = submitRun(body, concurrencyKey, rateLimitId, requestsPerHour);

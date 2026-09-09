@@ -785,24 +785,63 @@ the code:**
   `language` — user code is written to a file and never appears as a
   command-line argument anywhere.
 
-**Noted, not fixed — lower-priority hardening, not active exploits:**
+**The four lower-priority items above, followed up on request:**
 
-- No cap on concurrent WebSocket connections to `/runs/:id/stream`,
-  and that route isn't covered by the `POST /runs` rate limiter at all.
-- The queue's `maxPerKey` partitioning is trivially defeated by rotating
-  `X-Sandbin-Key` to an arbitrary fresh string per request — documented,
-  intended behavior for concurrency partitioning, but its security
-  implication (an unauthenticated caller can claim far more than one
-  identity's share of `maxConcurrency`) was never stated plainly before.
-- `ioctl` is allowed with no argument filtering at all — not currently
-  reachable as an escape given the fd's available to a guest are pipes,
-  not ttys or devices, but broader than strictly necessary.
-- `seccomp.mjs`'s cached BPF path is never re-validated after the first
-  successful check in a given process's lifetime — requires pre-existing
-  host write access to matter at all, so it's a defense-in-depth gap,
-  not a remotely exploitable one.
+- **WebSocket connection flooding, fixed.** Added `MAX_SOCKETS_PER_RUN`
+  (10) in `attachSocket()` — past that many concurrent sockets on one
+  run, a new connection gets an `error` event and is closed immediately
+  instead of being attached. Per-run, not per-server, since the finished
+  event and stats stream still need to reach every legitimate reconnect.
+- **`maxPerKey` bypass via header rotation, fixed.** `concurrencyKey`
+  used to be computed as `headerKey || ip` *before* the header was ever
+  checked against `apikeys.load()` — any string in `X-Sandbin-Key`, real
+  or not, got its own `maxPerKey` budget. Moved the computation inside
+  the body-parsing callback, after `issuedKey` is resolved:
+  `concurrencyKey = issuedKey ? headerKey : ip`. Only a header that
+  actually round-trips through `apiKeys.load()` gets to pick its own
+  partition now; anything else collapses to the caller's IP, which can't
+  be freely rotated per request the way a header can. Confirmed with a
+  regression test sending four concurrent runs under four different
+  never-issued keys against `maxPerKey: 1` — before the fix all four
+  would've been `accepted`; after, only the first is, and the other
+  three come back `key_limit`.
+- **`ioctl` argument filtering, investigated and deliberately not
+  done.** The plan was to keep `ioctl` generally allowed but deny the
+  two classic tty-injection request codes, `TIOCSTI` (0x5412) and
+  `TIOCLINUX` (0x541C). Two independent things closed this out instead
+  of a code change:
+  - **libseccomp can't actually express it.** A single rule can't carry
+    two `SCMP_CMP_NE` comparators on the same argument index — confirmed
+    directly, `seccomp_rule_add()` returns `-EINVAL` for that shape, in
+    this and the `_exact()` variant alike. And once *any* unconditional
+    `ALLOW` exists for a syscall, a coexisting argument-filtered rule for
+    that same syscall is never reached — confirmed with a standalone
+    harness spawning a real pty: with a specific deny-`TIOCLINUX` rule
+    and a generic ioctl-allow both present, the call still reached the
+    real kernel and got the kernel's own `ENOTTY`, not the rule's
+    distinguishing errno, regardless of which rule was added first or
+    whether `seccomp_rule_add_exact()` was used instead. The only
+    libseccomp-correct way to express "allow except N values" is an
+    exhaustive allowlist of every legitimate request code instead — not
+    viable for a syscall with as open-ended a surface as `ioctl` across
+    four guest languages without a steady stream of breakage, the same
+    failure mode this project already hit once with `umask`/`getsockopt`.
+  - **It wouldn't matter here anyway.** `spawnInSandbox` gives the guest
+    `stdio: ['pipe', 'pipe', 'pipe']` — never a pty — and `buildBwrapArgs`
+    passes `--new-session`, so the guest has no controlling terminal to
+    begin with. `--dev /dev` gives it a private, bwrap-owned device tree,
+    not the host's; even a guest that deliberately opens its own
+    `/dev/ptmx` and `TIOCSTI`s into its own slave is only talking to
+    itself inside its own mount namespace — there's no host-trusted
+    reader of that tty for the injection to ever reach. `ioctl` stays
+    unfiltered in `policy.c`, unchanged from Phase 1.
+- **`seccomp.mjs`'s cache-forever validity, fixed.** Removed the
+  module-level `cachedPath` short-circuit; `ensureSeccompProgram()` now
+  re-runs both `isStale()` checks on every call. Confirmed with two
+  calls across a simulated `policy.bpf` mtime change — the second call
+  now recompiles instead of trusting the first result forever.
 
-108/108 tests passing (was 95) — 13 new adversarial/regression cases
+109/109 tests passing (was 95) — 14 new adversarial/regression cases
 across `test:sandbox`, `test:server`, `test:ratelimit` and
 `test:apikeys`, each added specifically to keep one of the bugs above
 from coming back silently.

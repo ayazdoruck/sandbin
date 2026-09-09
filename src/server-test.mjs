@@ -314,6 +314,33 @@ async function testApiKeyHeaderTraversalDoesNotGrantElevatedQuota() {
   }, { anonymousRequestsPerHour: 3 });
 }
 
+async function testUnverifiedKeyHeaderCannotBypassMaxPerKey() {
+  return withServer({ maxPerKey: 1 }, async (baseUrl) => {
+    // Each request below carries a different, never-issued X-Sandbin-Key.
+    // If an unverified header were still allowed to pick its own
+    // concurrencyKey, every request would land in its own partition and
+    // all four would be accepted despite maxPerKey: 1. With the fix, an
+    // unverified header falls back to the shared IP key, so only the
+    // first run in flight is accepted and the rest are key_limit-rejected.
+    const jobs = Array.from({ length: 4 }, (_, i) =>
+      post(
+        baseUrl,
+        '/runs',
+        { language: 'python', code: 'import time; time.sleep(0.3)' },
+        { 'x-sandbin-key': `sb_${'0'.repeat(31)}${i}` }
+      )
+    );
+    const results = await Promise.all(jobs);
+    const accepted = results.filter((r) => r.body.accepted).length;
+    const keyLimited = results.filter((r) => r.body.verdict === 'key_limit').length;
+    return {
+      name: 'rotating an unverified X-Sandbin-Key header cannot bypass maxPerKey',
+      pass: accepted === 1 && keyLimited === 3,
+      detail: results.map((r) => r.body.accepted ? 'accepted' : r.body.verdict).join(','),
+    };
+  });
+}
+
 async function testKeyUsageRejectsPathTraversal() {
   return withServer({}, async (baseUrl) => {
     const res = await fetch(`${baseUrl}/keys/${encodeURIComponent('../etc/passwd')}`);
@@ -457,6 +484,7 @@ const CASES = [
   testQueueFullReturns429,
   testBadRequestReturns400,
   testApiKeyHeaderTraversalDoesNotGrantElevatedQuota,
+  testUnverifiedKeyHeaderCannotBypassMaxPerKey,
   testKeyUsageRejectsPathTraversal,
   testPermalinkDataRejectsPathTraversal,
   testReconnectAfterFinish,

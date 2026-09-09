@@ -32,12 +32,16 @@ function exportBpfProgram() {
   writeFileSync(BPF_PROGRAM, result.stdout);
 }
 
-let cachedPath = null;
-
+// Deliberately no "already checked once, trust it forever" shortcut: this
+// runs once per sandboxed spawn already, and a stat() call or two is not
+// measurable next to actually spawning bwrap and a cgroup for that same
+// run. Caching the *path* is fine (it never changes); caching the
+// *validity* meant a long-running server process would never notice if
+// policy.bpf changed on disk after its first request — a narrow window
+// (it requires host filesystem write access to matter at all), but a
+// free one to close.
 export function ensureSeccompProgram() {
-  if (cachedPath) return cachedPath;
   if (isStale(GENERATOR_BINARY, POLICY_SOURCE)) compileGenerator();
   if (isStale(BPF_PROGRAM, GENERATOR_BINARY)) exportBpfProgram();
-  cachedPath = BPF_PROGRAM;
-  return cachedPath;
+  return BPF_PROGRAM;
 }

@@ -29,23 +29,23 @@ jobs:
 
       - name: TEMP DEBUG - go env and a raw sandboxed go run
         run: |
-          which go
-          go env GOROOT
-          echo "--- as runner user, before any sudo node runs ---"
-          id
           mkdir -p data/go-cache
-          ls -la data/
-          stat data/go-cache
-          echo "--- as root, does mkdirSync-then-bwrap-bind reproduce raw? ---"
+          echo "--- owner/mode of the two source paths bwrap needs to bind ---"
+          stat -c '%U:%G %a %n' /usr/lib/go-1.22 "$PWD/data/go-cache"
+          echo "--- faithful repro: same flags buildBwrapArgs actually uses, as root ---"
           sudo bash -c '
             id
-            mkdir -p /tmp/sandbin-debug-cache
-            stat /tmp/sandbin-debug-cache
-            echo "binding a fresh /tmp dir:"
-            bwrap --ro-bind /tmp/sandbin-debug-cache /tmp/sandbin-debug-cache --bind /tmp /tmp2 -- true; echo "exit=$?"
-            echo "binding the repo data/go-cache dir:"
-            stat "'"$PWD"'/data/go-cache"
-            bwrap --ro-bind "'"$PWD"'/data/go-cache" "'"$PWD"'/data/go-cache" -- true; echo "exit=$?"
+            bwrap \
+              --unshare-all --die-with-parent --new-session --clearenv \
+              --setenv PATH /usr/bin --setenv HOME /tmp --setenv LANG C.UTF-8 \
+              --ro-bind /usr /usr \
+              --ro-bind /etc/ld.so.cache /etc/ld.so.cache \
+              --ro-bind /usr/lib/go-1.22 /usr/lib/go-1.22 \
+              --ro-bind "'"$PWD"'/data/go-cache" "'"$PWD"'/data/go-cache" \
+              --symlink usr/lib /lib --symlink usr/bin /bin \
+              --proc /proc --dev /dev \
+              -- /bin/true
+            echo "exit=$?"
           '
           echo "--- full sandbin run with SANDBIN_DEBUG ---"
           sudo env "PATH=$PATH" SANDBIN_DEBUG=1 node -e "

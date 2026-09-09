@@ -537,10 +537,13 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
 Closing real gaps rather than adding breadth for its own sake, roughly in
 the order they're worth doing:
 
-- **Docs site sync.** `sandbin.vercel.app` (the `docs/` tree, deployed
-  separately from the app itself) predates the CLI and `/metrics` —
-  neither has a page there yet, and the language/test counts on the
-  existing pages are stale.
+- **Docs site sync — mostly done, one gap left.** `index.html`,
+  `api.html` and `testing.html` had drifted from what `deploy_to_vercel`
+  actually shipped in earlier phases; the repo now matches production
+  again (95/95, a Metrics section, the eight-suite table). What's still
+  missing: the CLI itself has no page on the deployed site, only in
+  `README.md` — everything else got folded into an existing page, the
+  CLI is arguably substantial enough to warrant its own.
 - **GitHub Action.** A reusable Action wrapping `sandbin run` (or the
   HTTP API directly) so a CI workflow anywhere can execute untrusted
   code through this sandbox as a step, without vendoring the CLI.

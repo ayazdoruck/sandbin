@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sandbin — shared run</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header>
+  <h1><a href="/" class="brand-link">sandbin</a></h1>
+  <p id="meta">loading&hellip;</p>
+</header>
+
+<main>
+  <div id="content" style="display:none">
+    <pre id="code" class="output"></pre>
+
+    <div id="output" class="output"></div>
+    <canvas id="live-graph" class="live-graph"></canvas>
+    <div id="stats" class="stats"></div>
+
+    <p><a href="/">&larr; run your own</a></p>
+  </div>
+
+  <div id="not-found" style="display:none">
+    <p>This run wasn't found &mdash; it may have expired, or the link is wrong.</p>
+    <p><a href="/">&larr; try it yourself</a></p>
+  </div>
+</main>
+
+<script src="/permalink.js"></script>
+</body>
+</html>

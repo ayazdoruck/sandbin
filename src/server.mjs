@@ -6,15 +6,19 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { createQueue } from './queue.mjs';
 import { IMAGES } from './sandbox.mjs';
+import { createPermalinkStore } from './permalinks.mjs';
 
 const CLEANUP_DELAY_MS = 30_000;
+const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const DEFAULT_PERMALINK_DIR = path.join(process.cwd(), 'data', 'runs');
 
 const STATIC_ROUTES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
+  '/permalink.js': { file: 'permalink.js', type: 'text/javascript; charset=utf-8' },
 };
 
 function readJsonBody(req) {
@@ -41,9 +45,10 @@ function readJsonBody(req) {
   });
 }
 
-export function createServer({ queueLimits = {} } = {}) {
+export function createServer({ queueLimits = {}, permalinkDir = DEFAULT_PERMALINK_DIR } = {}) {
   const queue = createQueue(queueLimits);
   const runs = new Map();
+  const permalinks = createPermalinkStore({ dir: permalinkDir });
 
   function broadcast(record, message) {
     const payload = JSON.stringify(message);
@@ -69,11 +74,15 @@ export function createServer({ queueLimits = {} } = {}) {
       sockets: new Set(), stdinHandle: null,
     };
 
+    const language = body.language;
+    const code = body.code;
+    const stdin = typeof body.stdin === 'string' ? body.stdin : '';
+
     const ticket = queue.submit(
       {
-        language: body.language,
-        code: body.code,
-        stdin: typeof body.stdin === 'string' ? body.stdin : '',
+        language,
+        code,
+        stdin,
         limits: body.limits ?? {},
         onSpawn: (handle) => {
           record.status = 'running';
@@ -95,12 +104,16 @@ export function createServer({ queueLimits = {} } = {}) {
     if (!ticket.accepted) return { accepted: false, verdict: ticket.verdict };
 
     const runId = randomUUID();
+    const createdAt = Date.now();
     record.position = ticket.position;
     runs.set(runId, record);
 
-    ticket.result.then((result) => {
+    ticket.result.then(async (result) => {
       record.status = 'finished';
       record.result = result;
+      await permalinks
+        .save(runId, { id: runId, language, code, stdin, createdAt, chunks: record.chunks, stats: record.stats, result })
+        .catch(() => {});
       broadcast(record, { type: 'finished', result });
       for (const socket of record.sockets) socket.close();
       scheduleCleanup(runId);
@@ -160,6 +173,34 @@ export function createServer({ queueLimits = {} } = {}) {
       return;
     }
 
+    const permalinkDataMatch = req.method === 'GET' && /^\/r\/([^/]+)\/data$/.exec(req.url ?? '');
+    if (permalinkDataMatch) {
+      permalinks.load(permalinkDataMatch[1]).then((record) => {
+        if (!record) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ message: 'not found' }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(record));
+      });
+      return;
+    }
+
+    const permalinkPageMatch = req.method === 'GET' && /^\/r\/[^/]+$/.exec(req.url ?? '');
+    if (permalinkPageMatch) {
+      readFile(path.join(PUBLIC_DIR, 'permalink.html'))
+        .then((data) => {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          res.end(data);
+        })
+        .catch(() => {
+          res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ message: 'failed to read static asset' }));
+        });
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/runs') {
       const key = req.headers['x-sandbin-key'] || req.socket.remoteAddress;
       readJsonBody(req)
@@ -190,11 +231,13 @@ export function createServer({ queueLimits = {} } = {}) {
     wss.handleUpgrade(req, socket, head, (ws) => attachSocket(match[1], ws));
   });
 
-  return { httpServer, queue, runs };
+  return { httpServer, queue, runs, permalinks };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT ?? 8080);
-  const { httpServer } = createServer();
+  const { httpServer, permalinks } = createServer();
+  permalinks.sweep().catch(() => {});
+  setInterval(() => permalinks.sweep().catch(() => {}), SWEEP_INTERVAL_MS).unref();
   httpServer.listen(port, () => console.log(`sandbin listening on :${port}`));
 }

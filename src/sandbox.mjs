@@ -197,6 +197,8 @@ async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
+  const startedAt = Date.now();
+
   let stdout = '', stderr = '', truncated = false, verdict = null;
   const collect = (chunk, which) => {
     const room = lim.outputBytes - (stdout.length + stderr.length);
@@ -210,7 +212,7 @@ async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim,
     }
     const text = chunk.toString('utf8').slice(0, room);
     if (which === 'out') stdout += text; else stderr += text;
-    if (onChunk) onChunk({ stream: which === 'out' ? 'stdout' : 'stderr', text });
+    if (onChunk) onChunk({ stream: which === 'out' ? 'stdout' : 'stderr', text, t: Date.now() - startedAt });
   };
   child.stdout.on('data', (c) => collect(c, 'out'));
   child.stderr.on('data', (c) => collect(c, 'err'));
@@ -226,7 +228,6 @@ async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim,
     child.stdin.end(stdin);
   }
 
-  const startedAt = Date.now();
   const hardStopGraceMs = 2_000;
 
   const statsTimer = onStats

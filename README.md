@@ -174,6 +174,16 @@ stdin while it's running — this is what makes a real `input()` call work,
 not just a fixed string supplied up front. `{ "type": "stdin_close" }`
 sends EOF.
 
+**`GET /r/:runId`** is a permalink: an HTML page that replays the code,
+the streamed output and the resource graph exactly as they happened, timed
+from the real recorded `chunk`/`stats` timestamps (capped at 800ms per
+step, so a run that hit a long timeout doesn't force a visitor to sit
+through the dead air). **`GET /r/:runId/data`** is the JSON it's built
+from. Every finished run is saved automatically — no opt-in — as one JSON
+file per run under `data/runs/`, no database. Links expire after 30 days,
+checked lazily on read and swept hourly. The id is the same UUID `runId`
+already returned by `POST /runs`: unguessable, unlisted, not secret.
+
 ### Frontend
 
 `npm start` serves it at `/` — plain HTML, CSS and JS, no framework, no
@@ -182,7 +192,8 @@ it stream. The stdin box stays live for the duration of the run, so a
 program that calls `input()` actually works, not just one given its input
 up front. A live graph tracks `memory.current` for anything that runs long
 enough to plot — fed straight off the `stats` WebSocket messages, nothing
-faked client-side.
+faked client-side. Every finished run gets a permalink shown right below
+its results, ready to copy and share.
 
 ## Tests
 
@@ -236,6 +247,20 @@ slot:
 6/6 passed
 ```
 
+`npm run test:permalinks` covers the on-disk store directly, against a
+real temp directory — no mocks, TTL expiry driven by an injected clock
+rather than actually waiting 30 days:
+
+```
+✅ a saved record loads back with the same fields
+✅ loading an unknown id returns null, not an error
+✅ a record past its TTL loads as null and is deleted, not just hidden
+✅ a record well within its TTL still loads
+✅ sweep evicts only the record actually past its TTL, leaves the fresh one
+
+5/5 passed
+```
+
 `npm run test:server` spins up the real HTTP + WebSocket server on an
 ephemeral port — no mocks — and drives it end to end:
 
@@ -243,13 +268,16 @@ ephemeral port — no mocks — and drives it end to end:
 ✅ basic run streams started -> chunk -> finished       queued,started,stats,stats,chunk,finished
 ✅ chunks arrive incrementally, not all at once         chunks=3 gaps=300,300
 ✅ live stats stream reports growing memory.current     samples=6 memBytes=9367552,...,35581952
+✅ GET /r/:id/data returns the saved run right after finish, no race
+✅ GET /r/:id serves the permalink HTML page
+✅ GET /r/:id/data for an unknown id returns 404
 ✅ interactive stdin: reply sent only after seeing the prompt name: hello ayaz
 ✅ queue_full over HTTP returns 429                     202,202,429,429
 ✅ unknown language returns 400 immediately             {"accepted":false,"verdict":"bad_request",...}
 ✅ reconnecting after finish replays the final result   finished
 ✅ unknown run id over WS returns an error event        [{"type":"error",...}]
 
-8/8 passed
+11/11 passed
 ```
 
 ## Requirements
@@ -273,12 +301,13 @@ ephemeral port — no mocks — and drives it end to end:
 
 ## Status
 
-All seven roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
+All eight roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
 a bounded and backpressured job queue, a streaming HTTP + WebSocket API,
 Python/Bash/Node/C support, a minimal browser frontend with a live resource
-graph, and CI running all three test suites on every push. `npm start` and
-open it. See [ROADMAP.md](ROADMAP.md) for what was actually found building
-each phase — several real bugs, not just a feature checklist.
+graph and shareable permalinks, and CI running all four test suites on
+every push. `npm start` and open it. See [ROADMAP.md](ROADMAP.md) for what
+was actually found building each phase — several real bugs, not just a
+feature checklist.
 
 ### Known issues
 

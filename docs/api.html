@@ -125,6 +125,25 @@
     every run's resource limits to compensate.
   </p>
 
+  <h2>Permalinks</h2>
+  <p>
+    Every finished run is saved to disk and gets a shareable link:
+    <code>GET /r/:runId</code> serves an HTML page that replays the code,
+    the streamed output, and the resource graph exactly as they happened
+    &mdash; timed from the real <code>chunk</code>/<code>stats</code>
+    timestamps, capped at 800&nbsp;ms per step so a run that hit a long
+    timeout doesn't force a visitor to sit through the dead air.
+    <code>GET /r/:runId/data</code> is the JSON it's built from.
+  </p>
+  <p>
+    Links expire after 30 days, checked lazily on read and swept hourly
+    &mdash; there's no database, just one JSON file per run under
+    <code>data/runs/</code>. The id is the same <code>runId</code> returned
+    by <code>POST /runs</code>, an unguessable UUID: unlisted, not secret.
+    Sharing a link shares exactly what was submitted and what it produced,
+    nothing more.
+  </p>
+
   <div class="page-nav">
     <a class="prev" href="architecture"><span class="dir">Previous</span>&larr; Architecture</a>
     <a class="next" href="languages"><span class="dir">Next</span>Languages &rarr;</a>

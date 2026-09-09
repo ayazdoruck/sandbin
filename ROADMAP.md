@@ -198,3 +198,35 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
   guest claims about itself
 - 46/46 tests passing (`test:server` gained one case, everything else
   unchanged)
+
+## Phase 8 — shareable permalinks (done)
+
+- every finished run is saved automatically, no opt-in: `src/permalinks.mjs`
+  is a small disk-backed store (one JSON file per run, keyed by the same
+  `runId` already returned by `POST /runs`) with no new dependency and no
+  database — `save`/`load`/`sweep`, TTL-checked lazily on read and swept
+  hourly, 30 days by default
+- `GET /r/:runId` serves an HTML page that replays the run: the original
+  code, the streamed output, and the resource graph, timed from the actual
+  recorded `chunk`/`stats` timestamps rather than dumped instantly — a
+  shared timeout run doesn't force a visitor to watch it in real time
+  either, since each step's wait is capped at 800 ms. `GET /r/:runId/data`
+  is the JSON it's built from
+- a real ordering bug caught before it shipped, not after: the first version
+  broadcast `finished` over the WebSocket and then fired off the permalink
+  save without awaiting it. A client that fetched its own permalink the
+  instant it saw `finished` — which is exactly what the playground's own
+  "share this run" link invites someone to do — could race the write and
+  get a 404 for a run that very much existed. Fixed by awaiting the save
+  before broadcasting `finished` at all; a dedicated server test submits a
+  run, waits for it to finish over the socket, and immediately fetches the
+  permalink to prove the race is actually closed, not just less likely
+- the id is an unguessable UUID: unlisted, not secret, the same trust model
+  as a Gist or a paste link — sharing one shares exactly what was submitted
+  and what it produced, nothing more, and nothing requires a login to see
+- TTL correctness is tested against a real filesystem with an injected
+  clock (`load(id, { now })`, `sweep({ now })`) rather than actually
+  waiting 30 days or mocking the filesystem — new `test:permalinks` suite,
+  5 cases, plus 3 new server-level cases covering the HTTP surface and the
+  save-before-broadcast race specifically
+- 54/54 tests passing across four suites

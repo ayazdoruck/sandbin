@@ -9,6 +9,14 @@
   box-sizing: border-box;
 }
 
+a {
+  color: var(--fg);
+}
+
+a.brand-link {
+  text-decoration: none;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -184,6 +192,12 @@ textarea:focus, input[type="text"]:focus, select:focus {
 .stats.verdict-bad .verdict {
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.permalink {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
 }
 
 @media (max-width: 480px) {

@@ -1,3 +1,4 @@
 node_modules/
 seccomp/gen-policy
 seccomp/policy.bpf
+data/

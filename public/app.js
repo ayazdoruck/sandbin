@@ -4,6 +4,7 @@ const runButton = document.getElementById('run');
 const outputEl = document.getElementById('output');
 const statsEl = document.getElementById('stats');
 const graphEl = document.getElementById('live-graph');
+const permalinkEl = document.getElementById('permalink');
 const stdinInput = document.getElementById('stdin');
 const sendStdinButton = document.getElementById('send-stdin');
 const closeStdinButton = document.getElementById('close-stdin');
@@ -50,6 +51,7 @@ function clearOutput() {
   statsEl.className = 'stats';
   statSamples = [];
   graphEl.classList.remove('visible');
+  permalinkEl.style.display = 'none';
 }
 
 function drawGraph() {
@@ -156,7 +158,8 @@ async function run() {
     return;
   }
 
-  const wsUrl = `${location.origin.replace(/^http/, 'ws')}/runs/${body.runId}/stream`;
+  const runId = body.runId;
+  const wsUrl = `${location.origin.replace(/^http/, 'ws')}/runs/${runId}/stream`;
   socket = new WebSocket(wsUrl);
 
   socket.addEventListener('message', (event) => {
@@ -181,6 +184,12 @@ async function run() {
       renderStats(msg.result);
       setStdinEnabled(false);
       runButton.disabled = false;
+      permalinkEl.textContent = 'share this run: ';
+      const link = document.createElement('a');
+      link.href = `/r/${runId}`;
+      link.textContent = `${location.origin}/r/${runId}`;
+      permalinkEl.appendChild(link);
+      permalinkEl.style.display = '';
     } else if (msg.type === 'error') {
       appendStatus(`error: ${msg.message}`);
       runButton.disabled = false;

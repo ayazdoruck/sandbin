@@ -1,4 +1,7 @@
 import { WebSocket } from 'ws';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createServer } from './server.mjs';
 
 function post(baseUrl, path, body) {
@@ -25,7 +28,8 @@ function streamRun(baseUrl, runId, { onEvent } = {}) {
 }
 
 async function withServer(queueLimits, fn) {
-  const { httpServer } = createServer({ queueLimits });
+  const permalinkDir = await mkdtemp(path.join(tmpdir(), 'sandbin-permalinks-'));
+  const { httpServer } = createServer({ queueLimits, permalinkDir });
   await new Promise((resolve) => httpServer.listen(0, resolve));
   const port = httpServer.address().port;
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -33,6 +37,7 @@ async function withServer(queueLimits, fn) {
     return await fn(baseUrl);
   } finally {
     httpServer.close();
+    await rm(permalinkDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -97,6 +102,50 @@ async function testLiveStatsStream() {
       name: 'live stats stream reports growing memory.current while it runs',
       pass: stats.length >= 3 && memBytes.at(-1) > memBytes[0],
       detail: `samples=${stats.length} memBytes=${memBytes.join(',')}`,
+    };
+  });
+}
+
+async function testPermalinkDataAvailableAfterFinish() {
+  return withServer({}, async (baseUrl) => {
+    const submit = await post(baseUrl, '/runs', { language: 'python', code: 'print("shareable")' });
+    await streamRun(baseUrl, submit.body.runId);
+    const res = await fetch(`${baseUrl}/r/${submit.body.runId}/data`);
+    const body = await res.json();
+    return {
+      name: 'GET /r/:id/data returns the saved run right after finish, no race',
+      pass:
+        res.status === 200 &&
+        body.language === 'python' &&
+        body.code === 'print("shareable")' &&
+        body.result.verdict === 'ok' &&
+        body.result.stdout.includes('shareable'),
+      detail: JSON.stringify(body).slice(0, 120),
+    };
+  });
+}
+
+async function testPermalinkPageServesHtml() {
+  return withServer({}, async (baseUrl) => {
+    const submit = await post(baseUrl, '/runs', { language: 'python', code: 'print(1)' });
+    await streamRun(baseUrl, submit.body.runId);
+    const res = await fetch(`${baseUrl}/r/${submit.body.runId}`);
+    const contentType = res.headers.get('content-type') ?? '';
+    return {
+      name: 'GET /r/:id serves the permalink HTML page',
+      pass: res.status === 200 && contentType.includes('text/html'),
+      detail: `status=${res.status} content-type=${contentType}`,
+    };
+  });
+}
+
+async function testUnknownPermalinkReturns404() {
+  return withServer({}, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/r/not-a-real-id/data`);
+    return {
+      name: 'GET /r/:id/data for an unknown id returns 404',
+      pass: res.status === 404,
+      detail: `status=${res.status}`,
     };
   });
 }
@@ -179,6 +228,9 @@ const CASES = [
   testBasicRunStreams,
   testChunksArriveIncrementally,
   testLiveStatsStream,
+  testPermalinkDataAvailableAfterFinish,
+  testPermalinkPageServesHtml,
+  testUnknownPermalinkReturns404,
   testInteractiveStdin,
   testQueueFullReturns429,
   testBadRequestReturns400,

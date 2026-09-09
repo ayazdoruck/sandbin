@@ -4,9 +4,40 @@ const runBtn = document.getElementById('demo-run');
 const outputEl = document.getElementById('demo-output');
 const statsEl = document.getElementById('demo-stats');
 const noteEl = document.getElementById('demo-note');
+const graphEl = document.getElementById('demo-graph');
 
 let activeKey = 'hello';
 let playToken = 0;
+let statSamples = [];
+
+function drawGraph() {
+  if (statSamples.length < 2) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = graphEl.clientWidth || 640;
+  const cssHeight = 72;
+  if (graphEl.width !== cssWidth * dpr || graphEl.height !== cssHeight * dpr) {
+    graphEl.width = cssWidth * dpr;
+    graphEl.height = cssHeight * dpr;
+  }
+  const ctx = graphEl.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const maxT = statSamples.at(-1).t || 1;
+  const maxMem = Math.max(...statSamples.map((s) => s.memBytes), 1);
+  const fg = getComputedStyle(document.body).getPropertyValue('--fg').trim() || '#111';
+
+  ctx.beginPath();
+  statSamples.forEach((s, i) => {
+    const x = (s.t / maxT) * cssWidth;
+    const y = cssHeight - (s.memBytes / maxMem) * (cssHeight - 8) - 4;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = fg;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+}
 
 function formatBytes(bytes) {
   if (!bytes) return '0 B';
@@ -73,6 +104,8 @@ function selectDemo(key) {
   outputEl.textContent = '';
   statsEl.textContent = '';
   statsEl.className = 'stats';
+  statSamples = [];
+  graphEl.classList.remove('visible');
 }
 
 async function play() {
@@ -82,6 +115,8 @@ async function play() {
   outputEl.textContent = '';
   statsEl.textContent = '';
   statsEl.className = 'stats';
+  statSamples = [];
+  graphEl.classList.toggle('visible', demo.events.some((e) => e.type === 'stats'));
 
   let clock = 0;
   for (const event of demo.events) {
@@ -90,6 +125,7 @@ async function play() {
     clock = event.t;
     if (event.type === 'started') appendStatus('running');
     if (event.type === 'chunk') appendChunk(event.text, event.stream);
+    if (event.type === 'stats') { statSamples.push(event); drawGraph(); }
   }
 
   await new Promise((r) => setTimeout(r, 200));

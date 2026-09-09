@@ -131,6 +131,18 @@ textarea:focus, input[type="text"]:focus, select:focus {
   color: var(--muted);
 }
 
+.live-graph {
+  display: none;
+  width: 100%;
+  height: 72px;
+  border: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+.live-graph.visible {
+  display: block;
+}
+
 .stdin-row {
   display: flex;
   gap: 8px;

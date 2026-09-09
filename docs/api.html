@@ -62,6 +62,7 @@
   </p>
   <pre><code>{ "type": "queued", "position": 2 }
 { "type": "started" }
+{ "type": "stats", "t": 150, "memBytes": 20971520, "cpuMs": 8 }
 { "type": "chunk", "stream": "stdout", "text": "2\n" }
 { "type": "finished", "result": { "verdict": "ok", "stdout": "2\n", ... } }</code></pre>
 
@@ -69,10 +70,18 @@
     <tr><th>Type</th><th>When</th></tr>
     <tr><td><code>queued</code></td><td>connected before the run left the queue &mdash; carries its position</td></tr>
     <tr><td><code>started</code></td><td>the sandbox actually spawned; any buffered stdin can now be sent</td></tr>
+    <tr><td><code>stats</code></td><td>a live cgroup sample &mdash; <code>memory.current</code> and cumulative CPU time, polled every 50&nbsp;ms while the guest runs</td></tr>
     <tr><td><code>chunk</code></td><td>a piece of stdout or stderr, as it's produced &mdash; not buffered until exit</td></tr>
     <tr><td><code>finished</code></td><td>terminal message: full <code>result</code> object, socket closes after</td></tr>
     <tr><td><code>error</code></td><td>e.g. connecting to an unknown <code>runId</code></td></tr>
   </table>
+  <p>
+    <code>stats</code> carries <code>t</code> (milliseconds since the guest
+    started), <code>memBytes</code> and <code>cpuMs</code> &mdash; enough to
+    draw a live resource graph while a longer-running submission is still
+    executing. Short runs may finish before a single sample is taken; that's
+    expected, not a bug.
+  </p>
 
   <p>
     Connecting mid-run replays every chunk seen so far before continuing

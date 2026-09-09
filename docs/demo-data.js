@@ -38,10 +38,15 @@ const DEMOS = {
   memory: {
     label: 'memory limit',
     language: 'python',
+    note: 'paced for readability — the real run took 34ms start to finish',
     code: 'print("allocating 512MB...")\nx = bytearray(512 * 1024 * 1024)\nprint("should not get here")',
     events: [
       { t: 0, type: 'started' },
       { t: 30, type: 'chunk', stream: 'stdout', text: 'allocating 512MB...\n' },
+      { t: 120, type: 'stats', memBytes: 22000000, cpuMs: 3 },
+      { t: 260, type: 'stats', memBytes: 58000000, cpuMs: 7 },
+      { t: 400, type: 'stats', memBytes: 96000000, cpuMs: 10 },
+      { t: 540, type: 'stats', memBytes: 128000000, cpuMs: 12 },
     ],
     result: {
       verdict: 'memory_limit', exitCode: null, signal: null, durationMs: 34, cpuMs: 12,

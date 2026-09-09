@@ -156,16 +156,23 @@ messages, one per frame:
 ```
 { "type": "queued", "position": 2 }
 { "type": "started" }
+{ "type": "stats", "t": 150, "memBytes": 20971520, "cpuMs": 8 }
 { "type": "chunk", "stream": "stdout", "text": "2\n" }
 { "type": "finished", "result": { "verdict": "ok", "stdout": "2\n", ... } }
 ```
 
-Connecting after the run has already started replays every chunk seen so
-far before continuing live; connecting after it's finished replays just the
-final `finished` message and closes. Sending `{ "type": "stdin", "text":
-"..." }` over the socket writes to the guest's stdin while it's running —
-this is what makes a real `input()` call work, not just a fixed string
-supplied up front. `{ "type": "stdin_close" }` sends EOF.
+`stats` is a live cgroup sample — `memory.current` and cumulative CPU time,
+polled every 50ms while the guest runs — enough to draw a live resource
+graph for anything longer-lived than a one-liner; short runs may finish
+before a single sample lands, which is expected.
+
+Connecting after the run has already started replays every chunk (and
+`stats` sample) seen so far before continuing live; connecting after it's
+finished replays just the final `finished` message and closes. Sending
+`{ "type": "stdin", "text": "..." }` over the socket writes to the guest's
+stdin while it's running — this is what makes a real `input()` call work,
+not just a fixed string supplied up front. `{ "type": "stdin_close" }`
+sends EOF.
 
 ### Frontend
 
@@ -173,7 +180,9 @@ supplied up front. `{ "type": "stdin_close" }` sends EOF.
 build step, black and white only. Pick a language, write code, run, watch
 it stream. The stdin box stays live for the duration of the run, so a
 program that calls `input()` actually works, not just one given its input
-up front.
+up front. A live graph tracks `memory.current` for anything that runs long
+enough to plot — fed straight off the `stats` WebSocket messages, nothing
+faked client-side.
 
 ## Tests
 
@@ -231,15 +240,16 @@ slot:
 ephemeral port — no mocks — and drives it end to end:
 
 ```
-✅ basic run streams started -> chunk -> finished       queued,started,chunk,finished
+✅ basic run streams started -> chunk -> finished       queued,started,stats,stats,chunk,finished
 ✅ chunks arrive incrementally, not all at once         chunks=3 gaps=300,300
+✅ live stats stream reports growing memory.current     samples=6 memBytes=9367552,...,35581952
 ✅ interactive stdin: reply sent only after seeing the prompt name: hello ayaz
 ✅ queue_full over HTTP returns 429                     202,202,429,429
 ✅ unknown language returns 400 immediately             {"accepted":false,"verdict":"bad_request",...}
 ✅ reconnecting after finish replays the final result   finished
 ✅ unknown run id over WS returns an error event        [{"type":"error",...}]
 
-7/7 passed
+8/8 passed
 ```
 
 ## Requirements
@@ -263,12 +273,12 @@ ephemeral port — no mocks — and drives it end to end:
 
 ## Status
 
-All six roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
+All seven roadmap phases are done: namespace/cgroup/seccomp/rlimit isolation,
 a bounded and backpressured job queue, a streaming HTTP + WebSocket API,
-Python/Bash/Node/C support, a minimal browser frontend, and CI running all
-three test suites on every push. `npm start` and open it. See
-[ROADMAP.md](ROADMAP.md) for what was actually found building each phase —
-several real bugs, not just a feature checklist.
+Python/Bash/Node/C support, a minimal browser frontend with a live resource
+graph, and CI running all three test suites on every push. `npm start` and
+open it. See [ROADMAP.md](ROADMAP.md) for what was actually found building
+each phase — several real bugs, not just a feature checklist.
 
 ### Known issues
 

@@ -3,6 +3,7 @@ const codeInput = document.getElementById('code');
 const runButton = document.getElementById('run');
 const outputEl = document.getElementById('output');
 const statsEl = document.getElementById('stats');
+const graphEl = document.getElementById('live-graph');
 const stdinInput = document.getElementById('stdin');
 const sendStdinButton = document.getElementById('send-stdin');
 const closeStdinButton = document.getElementById('close-stdin');
@@ -15,6 +16,7 @@ const SAMPLES = {
 };
 
 let socket = null;
+let statSamples = [];
 
 languageSelect.addEventListener('change', () => {
   if (Object.values(SAMPLES).includes(codeInput.value)) {
@@ -46,6 +48,37 @@ function clearOutput() {
   outputEl.textContent = '';
   statsEl.textContent = '';
   statsEl.className = 'stats';
+  statSamples = [];
+  graphEl.classList.remove('visible');
+}
+
+function drawGraph() {
+  if (statSamples.length < 2) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = graphEl.clientWidth || 640;
+  const cssHeight = 72;
+  if (graphEl.width !== cssWidth * dpr || graphEl.height !== cssHeight * dpr) {
+    graphEl.width = cssWidth * dpr;
+    graphEl.height = cssHeight * dpr;
+  }
+  const ctx = graphEl.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const maxT = statSamples.at(-1).t || 1;
+  const maxMem = Math.max(...statSamples.map((s) => s.memBytes), 1);
+  const fg = getComputedStyle(document.body).getPropertyValue('--fg').trim() || '#111';
+
+  ctx.beginPath();
+  statSamples.forEach((s, i) => {
+    const x = (s.t / maxT) * cssWidth;
+    const y = cssHeight - (s.memBytes / maxMem) * (cssHeight - 8) - 4;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = fg;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
 }
 
 function setStdinEnabled(enabled) {
@@ -133,9 +166,13 @@ async function run() {
     } else if (msg.type === 'started') {
       appendStatus('running');
       setStdinEnabled(true);
+      graphEl.classList.add('visible');
     } else if (msg.type === 'chunk') {
       sawChunk = true;
       appendChunk(msg.text, msg.stream);
+    } else if (msg.type === 'stats') {
+      statSamples.push(msg);
+      drawGraph();
     } else if (msg.type === 'finished') {
       if (!sawChunk) {
         if (msg.result.stdout) appendChunk(msg.result.stdout, 'stdout');

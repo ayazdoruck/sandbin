@@ -527,6 +527,18 @@ button .hint {
   font-style: italic;
 }
 
+.live-graph {
+  display: none;
+  width: 100%;
+  height: 72px;
+  border: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+.live-graph.visible {
+  display: block;
+}
+
 .page-nav {
   display: flex;
   justify-content: space-between;

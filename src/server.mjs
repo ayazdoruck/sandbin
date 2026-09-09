@@ -65,7 +65,7 @@ export function createServer({ queueLimits = {} } = {}) {
     }
 
     const record = {
-      status: 'queued', position: null, chunks: [], result: null,
+      status: 'queued', position: null, chunks: [], stats: [], result: null,
       sockets: new Set(), stdinHandle: null,
     };
 
@@ -83,6 +83,10 @@ export function createServer({ queueLimits = {} } = {}) {
         onChunk: (chunk) => {
           record.chunks.push(chunk);
           broadcast(record, { type: 'chunk', ...chunk });
+        },
+        onStats: (stats) => {
+          record.stats.push(stats);
+          broadcast(record, { type: 'stats', ...stats });
         },
       },
       { key }
@@ -122,6 +126,7 @@ export function createServer({ queueLimits = {} } = {}) {
     if (record.status === 'running') {
       socket.send(JSON.stringify({ type: 'started' }));
       for (const chunk of record.chunks) socket.send(JSON.stringify({ type: 'chunk', ...chunk }));
+      for (const stats of record.stats) socket.send(JSON.stringify({ type: 'stats', ...stats }));
     } else {
       socket.send(JSON.stringify({ type: 'queued', position: record.position }));
     }

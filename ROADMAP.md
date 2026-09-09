@@ -169,3 +169,32 @@ kernel itself mishandles. Seccomp is the layer that shrinks that surface.
 - repository pushed to GitHub under a single author, `ayazdoruck`; every
   commit message states what broke and how it was actually found, not just
   what changed
+
+## Phase 7 — live resource telemetry (done)
+
+- `sandbox.mjs` gained an `onStats` hook alongside `onChunk`/`onSpawn`:
+  while the guest runs, its cgroup's `memory.current` and `cpu.stat` are
+  polled every 50 ms and handed to the caller as `{ t, memBytes, cpuMs }`,
+  same shape and same hook pattern as the existing streaming callbacks —
+  `run()`'s single-promise contract for non-streaming callers is untouched
+- the server broadcasts each sample as a `stats` WebSocket message and
+  buffers them per run, replayed alongside buffered chunks for anyone who
+  connects mid-run — the exact same catch-up mechanism Phase 3 already
+  built for `chunk`, extended rather than duplicated
+- both frontends (the real playground and the docs site's recorded demo)
+  draw the same thing from it: a canvas sparkline of live memory usage,
+  revealed once a run starts and left showing the full trace once it ends
+- deliberately no `pids.current` or dual-axis CPU line in v1 — one metric,
+  drawn well, beats two metrics fighting for the same 72px of height
+- honest about the gap this doesn't close: at a 50 ms poll interval, most
+  sandbin runs (~20 ms median, see [Benchmarks](https://sandbin.vercel.app/benchmarks))
+  finish before a single sample is taken. The graph is for the minority of
+  runs that actually run long enough to have a story to tell — a tight
+  memory loop, a deliberate `sleep`, an interactive session — not for the
+  one-liners the whole project is fastest at. Verified with a real test
+  that forces exactly that case: a loop that grows a `bytearray` with a
+  `time.sleep()` between iterations, asserting on cgroup-reported
+  `memory.current` actually increasing across samples, not on anything the
+  guest claims about itself
+- 46/46 tests passing (`test:server` gained one case, everything else
+  unchanged)

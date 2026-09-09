@@ -78,6 +78,29 @@ async function testChunksArriveIncrementally() {
   });
 }
 
+async function testLiveStatsStream() {
+  return withServer({}, async (baseUrl) => {
+    const submit = await post(baseUrl, '/runs', {
+      language: 'python',
+      code:
+        'import time\n' +
+        'data = bytearray()\n' +
+        'for i in range(5):\n' +
+        '    data += bytearray(5 * 1024 * 1024)\n' +
+        '    time.sleep(0.06)\n' +
+        'print("done")',
+    });
+    const events = await streamRun(baseUrl, submit.body.runId);
+    const stats = events.filter((e) => e.type === 'stats');
+    const memBytes = stats.map((s) => s.memBytes);
+    return {
+      name: 'live stats stream reports growing memory.current while it runs',
+      pass: stats.length >= 3 && memBytes.at(-1) > memBytes[0],
+      detail: `samples=${stats.length} memBytes=${memBytes.join(',')}`,
+    };
+  });
+}
+
 async function testInteractiveStdin() {
   return withServer({}, async (baseUrl) => {
     const submit = await post(baseUrl, '/runs', {
@@ -155,6 +178,7 @@ async function testUnknownRunIdReturnsError() {
 const CASES = [
   testBasicRunStreams,
   testChunksArriveIncrementally,
+  testLiveStatsStream,
   testInteractiveStdin,
   testQueueFullReturns429,
   testBadRequestReturns400,

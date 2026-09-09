@@ -175,8 +175,9 @@ function buildBwrapArgs({ hostDir, argv, extraBinds, boxWritable }, lim, seccomp
 }
 
 const CGROUP_ASSIGN_FAILED = 91;
+const STATS_INTERVAL_MS = 50;
 
-async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim, stdin = '', onChunk, onSpawn }) {
+async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim, stdin = '', onChunk, onSpawn, onStats }) {
   const seccompBpfPath = ensureSeccompProgram();
   await ensureParentSlice();
   const cgroup = await createCgroup(id, lim);
@@ -228,6 +229,14 @@ async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim,
   const startedAt = Date.now();
   const hardStopGraceMs = 2_000;
 
+  const statsTimer = onStats
+    ? setInterval(async () => {
+        const memBytes = Number(await readStat(cgroup, 'memory.current', '0'));
+        const cpuUsec = Number(/usage_usec (\d+)/.exec(await readStat(cgroup, 'cpu.stat'))?.[1] ?? 0);
+        onStats({ t: Date.now() - startedAt, memBytes, cpuMs: Math.round(cpuUsec / 1000) });
+      }, STATS_INTERVAL_MS)
+    : null;
+
   const exit = await new Promise((resolve) => {
     let settled = false;
     const settle = (value) => {
@@ -254,6 +263,7 @@ async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim,
     child.on('close', () => {
       clearTimeout(softTimer);
       clearTimeout(hardTimer);
+      clearInterval(statsTimer);
     });
   });
 
@@ -279,7 +289,7 @@ async function spawnInSandbox({ id, hostDir, argv, extraBinds, boxWritable, lim,
   };
 }
 
-export async function run({ language = 'python', code = '', stdin = '', limits = {}, onChunk, onSpawn } = {}) {
+export async function run({ language = 'python', code = '', stdin = '', limits = {}, onChunk, onSpawn, onStats } = {}) {
   const spec = IMAGES[language];
   if (!spec) throw new Error(`unknown language: ${language}`);
   const lim = { ...DEFAULT_LIMITS, ...limits };
@@ -301,7 +311,7 @@ export async function run({ language = 'python', code = '', stdin = '', limits =
   }
 
   const result = await spawnInSandbox({
-    id, hostDir, argv: spec.argv, extraBinds: spec.extraBinds, lim, stdin, onChunk, onSpawn,
+    id, hostDir, argv: spec.argv, extraBinds: spec.extraBinds, lim, stdin, onChunk, onSpawn, onStats,
   });
   await rm(hostDir, { recursive: true, force: true }).catch(() => {});
   return { id, ...result };

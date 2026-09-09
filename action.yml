@@ -108,8 +108,12 @@ runs:
           tmp="$(mktemp)"
           printf '%s' "$SANDBIN_CODE" > "$tmp"
           echo "file=$tmp" >> "$GITHUB_OUTPUT"
+          echo "is_temp=true" >> "$GITHUB_OUTPUT"
         else
+          # this is the caller's own code-file input — ours to read,
+          # never ours to delete later.
           echo "file=$SANDBIN_CODE_FILE" >> "$GITHUB_OUTPUT"
+          echo "is_temp=false" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Run through sandbin
@@ -131,6 +135,7 @@ runs:
           stdin_file="$(mktemp)"
           printf '%s' "$SANDBIN_STDIN" > "$stdin_file"
           args+=(-i "$stdin_file")
+          echo "stdin-file=$stdin_file" >> "$GITHUB_OUTPUT"
         fi
         [ -n "$SANDBIN_MEMORY" ] && args+=(--memory "$SANDBIN_MEMORY")
         [ -n "$SANDBIN_CPU" ] && args+=(--cpu "$SANDBIN_CPU")
@@ -144,6 +149,7 @@ runs:
         # right here, before fail-on-error ever gets a say. || true defers
         # that decision entirely to the writer step below.
         result_file="$(mktemp)"
+        echo "result-file=$result_file" >> "$GITHUB_OUTPUT"
         sudo env "PATH=$PATH" node "${{ github.action_path }}/bin/sandbin.mjs" "${args[@]}" > "$result_file" || true
 
         SANDBIN_RESULT_FILE="$result_file" node --input-type=module -e '
@@ -172,3 +178,16 @@ runs:
             process.exit(1);
           }
         '
+
+    - name: Clean up temp files
+      if: always()
+      shell: bash
+      env:
+        SANDBIN_IS_TEMP: ${{ steps.code.outputs.is_temp }}
+        SANDBIN_CODE_FILE: ${{ steps.code.outputs.file }}
+        SANDBIN_RESULT_FILE: ${{ steps.run.outputs.result-file }}
+        SANDBIN_STDIN_FILE: ${{ steps.run.outputs.stdin-file }}
+      run: |
+        [ "$SANDBIN_IS_TEMP" = "true" ] && rm -f "$SANDBIN_CODE_FILE"
+        rm -f "$SANDBIN_RESULT_FILE" "$SANDBIN_STDIN_FILE"
+        true

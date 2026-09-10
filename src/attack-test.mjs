@@ -62,6 +62,14 @@ const CASES = [
     code: 'while True: print("A" * 1000)',
     check: (r) => r.verdict === 'output_limit' && r.truncated },
 
+  { name: 'chunk flood stays under the byte cap', language: 'python',
+    code: 'while True: print("x")',
+    // The real point isn't a specific byte count (Node batches multiple
+    // writes per 'data' event, so the exact figure varies run to run) —
+    // it's that this stays strictly under the 64KB default outputBytes
+    // cap, proving chunk_limit fired because of chunk *count*, not bytes.
+    check: (r) => r.verdict === 'chunk_limit' && r.truncated && r.stdout.length < 64 * 1024 },
+
   { name: 'tmpfs bounded', language: 'python',
     code: 'open("/tmp/big","wb").write(b"A" * (64*1024*1024)); print("FILLED")',
     check: (r) => !r.stdout.includes('FILLED') },
@@ -148,6 +156,18 @@ const CASES = [
     code: 'print("ok despite garbage limits")',
     limits: { memoryBytes: 'not-a-number', pids: -5, wallClockMs: 'nope', cpuPercent: {} },
     check: (r) => r.verdict === 'ok' && r.stdout.includes('ok despite garbage limits') },
+
+  // sanitizeLimits()'s underflow/NaN side (pids: -5 above) was already
+  // covered, but the Math.min(bounds.max, ...) upper clamp had zero
+  // coverage in either direction — a caller requesting an absurd
+  // memoryBytes doesn't get it honored, only clamped to the real 512MB
+  // ceiling: an allocation comfortably above that ceiling still gets
+  // OOM-killed, proving the cgroup's actual limit is the clamped value,
+  // not the requested one.
+  { name: 'memoryBytes above max is clamped, not honored literally', language: 'python',
+    code: 'x = bytearray(600 * 1024 * 1024)',
+    limits: { memoryBytes: 999_999_999_999 },
+    check: (r) => r.verdict === 'memory_limit' && r.oomKills > 0 },
 
   // Go is only registered when the host actually has a toolchain (see
   // sandbox.mjs) — these cases run for real wherever it's available and are

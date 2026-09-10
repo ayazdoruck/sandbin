@@ -968,6 +968,151 @@ its own — a timing assertion doesn't belong in a CI suite — but the
 existing Basic Auth accept/reject tests already cover its functional
 behavior unchanged.
 
+## Phase 18 — a multi-angle review of the whole week's diff (done)
+
+Requested directly: review everything from the RCE fix through the docs
+pass (`76522e8^..HEAD`, ~1300 lines) for correctness bugs and cleanup,
+not just security. Ten finder angles ran in parallel — line-by-line scans
+of both halves of the diff, a removed-behavior audit, a cross-file
+caller/callee trace, JS-pitfall and wrapper-correctness checks, reuse and
+simplification, efficiency and altitude, and a dedicated test-file
+correctness pass — followed by an independent verification pass (most
+candidates reproduced directly rather than taken on the finder's word)
+and a final gap sweep. 15 findings survived; all 15 fixed.
+
+**Two crash risks in this same week's own commits:**
+
+- `spawnInSandbox` never registered `child.on('error', ...)`. Node never
+  emits `'close'` for a child that fails to launch at all (`ENOENT`, or
+  `EMFILE`/`EAGAIN`/`ENOMEM` under the fd/process exhaustion this service
+  is specifically built to run into under load) — it emits `'error'`
+  instead, and an unhandled `'error'` event throws synchronously,
+  crashing the *entire* process, not just the one request. Confirmed by
+  reproducing the same spawn-with-only-a-close-listener shape against a
+  nonexistent binary. Fixed by settling with a new `spawn_failed` verdict
+  instead of letting the error propagate unhandled.
+- `warmGoCache()`'s own leaked-directory fix from Phase 17 put the new
+  `rmSync()` cleanup in `finally`, but outside the function's existing
+  `try`/`catch` — built specifically so a warm-up problem never takes the
+  process down. Any non-`ENOENT` failure (a locked-down tmp mount) would
+  have thrown uncaught during module import, crashing the server before
+  it ever started listening — strictly worse than the small leak that fix
+  was closing. Fixed by wrapping the cleanup in its own `try`/`catch`.
+
+**`sanitizeLimits()` had three separate gaps, all in the same function
+added last phase:**
+
+- Its own comment said "a non-numeric value falls back to the default" —
+  but `Number(null)`, `Number(false)`, `Number('')` and `Number([])` are
+  all the finite value `0`, which took the *clamp* path (landing on the
+  minimum bound) instead of the *default* path. Confirmed:
+  `{ wallClockMs: null }` produced `100`, not the documented `5000`.
+  Fixed by requiring the raw input actually be a number or non-empty
+  string before coercing at all.
+- The CLI's own `--timeout`/`--memory` "override" flags silently hit the
+  same 60s/512MB ceiling meant for an anonymous HTTP caller — confirmed
+  live: `sandbin run job.py --timeout 120000` still stopped at ~60s, with
+  nothing telling the user their flag was overridden. Fixed with a
+  separate `LOCAL_LIMIT_BOUNDS` (600s / 4GB) that only the CLI's local run
+  path opts into explicitly — the HTTP path's own call site never
+  specifies bounds, so it can't drift wider by accident.
+- The upper-bound clamp (`Math.min(bounds.max, ...)`) had zero test
+  coverage in either direction — only the underflow/NaN side was
+  exercised. Added a case requesting `memoryBytes: 999_999_999_999` and
+  confirming an allocation just above the real 512MB ceiling still gets
+  OOM-killed, proving the enforced limit is the clamped value, not the
+  requested one.
+
+**`MAX_CHUNKS` (Phase 17's chunk-count DoS fix) mislabeled its own
+truncation.** A program flushing very frequently in tiny writes (a
+progress/heartbeat loop) could hit the 4000-chunk cap while nowhere near
+the byte budget, and got reported as `output_limit` — "you produced too
+much output" — when what actually happened was "you flushed too often."
+Confirmed: 4500 rapid one-line prints hit the chunk cap at 18.8KB, far
+under even the default 64KB byte cap. Fixed with a distinct `chunk_limit`
+verdict for exactly this case.
+
+**The CSRF Content-Type fix (Phase 17 addendum) had its own bypass of the
+body-size cap.** `readJsonBody()` rejected a bad Content-Type *before*
+the `'data'` listener that enforces `MAX_BODY_BYTES` was ever attached —
+so for any non-JSON request, the 2MB cap didn't apply at all; Node's own
+keep-alive drain silently absorbed the whole body regardless of size.
+Confirmed live with a 200MB body under `Content-Type: text/plain`
+completing in 93ms, fully absorbed — the exact request shape the CSRF fix
+targets, still able to consume unbounded bandwidth. The first fix
+attempt (`req.destroy()` on mismatch) closed that but broke the client's
+ability to ever receive the 400 — destroying `req` tears down the socket
+`res` writes to. Landed on: the size-capping listener is now always
+attached regardless of content type (a non-JSON body is drained and
+counted but not buffered), and `req.destroy()` only fires once the cap is
+actually exceeded — a reasonably-sized wrong-content-type request still
+gets a clean 400.
+
+**No WebSocket heartbeat meant a zombie connection could lock a client
+out of its own run.** `record.sockets` only shrank on a clean `'close'`;
+a connection that dropped uncleanly (network switch, sleep, a NAT
+timeout with no RST) left a zombie entry nothing removed. A client
+reconnecting repeatedly over a flaky connection could accumulate zombies
+toward `MAX_SOCKETS_PER_RUN` and get "too many connections" to its own
+run. Fixed with standard ws ping/pong: anything that hasn't ponged since
+the last sweep gets terminated, which fires `'close'` and lets the
+existing cleanup run normally. Regression test forces a live socket into
+a truly-unreachable state (its own `ping()` replaced with a no-op, so a
+real client can't auto-pong its way back to "alive") and confirms it's
+reaped within two sweep cycles.
+
+**Two of the Phase 17 path-traversal regression tests didn't actually
+test anything.** Both used `encodeURIComponent('../etc/passwd')`-style
+payloads — which percent-encodes `/` to `%2F`, and since Node never
+decodes `req.url` before route matching, the payload always lands as one
+harmless, nonexistent-file segment regardless of whether the format-check
+guard exists. Confirmed by disabling the guard in a scratch copy and
+rerunning the identical test: still 404, still green. Separately, a
+*raw*, un-encoded traversal can't reach these two routes at all — their
+`[^/]+` route regex can't match a path containing a literal `/`, so real
+traversal was never actually possible here structurally, guard or not.
+What the guard actually protects against is different: an id shaped
+wrong but pointing at a real file that exists in the store directory.
+Rewrote both tests to prove exactly that — plant a real file under a
+non-conforming name and confirm it's still refused — and confirmed *these*
+versions do fail when the guard is disabled.
+
+**Two tests had real, demonstrated flakiness risk.** `apikeys-test.mjs`'s
+TTL sweep test backdated its "expired" key with a 5000ms margin but left
+its "still valid" key riding on real wall-clock time with zero margin
+against a 1000ms TTL — reproduced the flake directly by injecting a
+1100ms delay into the same sequence. Fixed by pinning every check to one
+fully-injected `now`, removing real time from the test entirely.
+`ratelimit-test.mjs`'s sweep test asserted `peek(...).count === 0` after
+sweeping, but `peek()` already synthesizes `{count: 0}` for any bucket
+past its own `resetAt` whether or not the `Map` entry was actually
+deleted — a `sweep()` that silently no-ops on `buckets.delete()` (the
+exact unbounded-growth bug it exists to fix) would pass the same
+assertion. Added a `size()` accessor to `ratelimit.mjs` and asserted on
+it directly: 51 buckets before sweeping, 1 after.
+
+**Cleanup, not bugs:**
+
+- `apikeys.mjs`'s `sweep()` and `load()`'s TTL check were near-verbatim
+  copies of `permalinks.mjs`'s versions, differing only in which
+  timestamp field they read — exactly the kind of duplication that let
+  the load-time TTL check go missing in one copy but not the other back
+  in the Phase 17 addendum. Extracted both into a new `src/ttl-store.mjs`
+  shared by both stores.
+- `API_KEY_FORMAT` was hand-duplicated in `server.mjs`, disconnected from
+  `apikeys.mjs`'s actual key generation — a future change to key shape
+  could silently desync the two. Now exported from `apikeys.mjs`, next to
+  `issue()`, and imported where it's checked.
+- The `maxPerKey` fix's real side effect — legitimate callers behind a
+  shared IP now share one concurrency budget, where each could previously
+  pick an arbitrary header string for an independent one — was accurate
+  but never stated plainly. Documented at the fix site.
+- `server-test.mjs`'s own traversal-canary test leaked its scratch
+  directory on any thrown exception; wrapped in `try`/`finally` like every
+  other resource in the same file.
+
+108/108 tests passing (was 105).
+
 ## What's left
 
 Closing real gaps rather than adding breadth for its own sake, roughly in

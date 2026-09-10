@@ -123,6 +123,11 @@ async function runLocal({ language, code, stdin, limits, json }) {
     code,
     stdin,
     limits,
+    // LIMIT_BOUNDS is sized for an anonymous HTTP-facing playground; this is
+    // a local run on the user's own machine with no other tenants to
+    // protect, so --timeout/--memory get real headroom instead of being
+    // silently capped at the same 60s/512MB an anonymous web caller gets.
+    limitBounds: sandbox.LOCAL_LIMIT_BOUNDS,
     onChunk: json ? undefined : (chunk) => process[chunk.stream === 'stdout' ? 'stdout' : 'stderr'].write(chunk.text),
   });
 }

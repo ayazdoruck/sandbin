@@ -79,8 +79,16 @@ function warmGoCache() {
     // GOCACHE itself is meant to persist (that's the whole point) — but the
     // scratch dir holding the warm-up program and GOPATH is not, and was
     // never being removed: a real, if small, leftover on every single
-    // process start with Go available.
-    if (dir) rmSync(dir, { recursive: true, force: true });
+    // process start with Go available. This cleanup must never be able to
+    // take the whole process down with it: force:true only swallows ENOENT,
+    // and this whole function exists specifically so a warm-up problem
+    // (including one in its own teardown) can't stop the server from
+    // starting.
+    try {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      console.error(`[sandbin] go cache warm-up cleanup failed: ${err.message}`);
+    }
   }
 }
 
@@ -166,7 +174,7 @@ const COMPILE_LIMITS = {
 // what shape or type the caller actually sent. A non-numeric value falls
 // back to the default; a numeric one is clamped into a sane range, never
 // passed through as-is.
-const LIMIT_BOUNDS = {
+export const LIMIT_BOUNDS = {
   memoryBytes: { min: 1 * 1024 * 1024, max: 512 * 1024 * 1024 },
   cpuPercent: { min: 1, max: 100 },
   // bwrap's own setup needs at least 3 concurrent processes even for a
@@ -181,13 +189,41 @@ const LIMIT_BOUNDS = {
   tmpfsBytes: { min: 1 * 1024 * 1024, max: 256 * 1024 * 1024 },
 };
 
-function sanitizeLimits(rawLimits) {
+// The bounds above exist for HTTP callers this process has never met and
+// can't hold accountable — they're deliberately tight (60s, 512MB) for an
+// anonymous public-facing playground. The CLI's local run path is a
+// different trust context entirely: a user running code on their own
+// machine, with no server, no other tenants to protect from them. Reusing
+// LIMIT_BOUNDS there silently overrode `sandbin run --timeout 120000` down
+// to 60000 with no warning — confirmed directly (durationMs came back
+// ~60007, not 120000). Only the two fields that plausibly matter for a
+// longer local batch job are widened; cpuPercent's ceiling (100% of one
+// share) isn't a trust question, and pids/outputBytes/etc. were never
+// reported as a real local-use complaint, so they stay exactly as tight
+// as the HTTP defaults rather than being loosened without evidence.
+export const LOCAL_LIMIT_BOUNDS = {
+  ...LIMIT_BOUNDS,
+  wallClockMs: { min: LIMIT_BOUNDS.wallClockMs.min, max: 600_000 },
+  memoryBytes: { min: LIMIT_BOUNDS.memoryBytes.min, max: 4 * 1024 * 1024 * 1024 },
+};
+
+export function sanitizeLimits(rawLimits, bounds = LIMIT_BOUNDS) {
   const clean = {};
   for (const key of Object.keys(DEFAULT_LIMITS)) {
-    const bounds = LIMIT_BOUNDS[key];
-    const value = Number(rawLimits?.[key]);
+    const limBounds = bounds[key];
+    // Number(null) / Number(false) / Number('') / Number([]) are all the
+    // finite value 0, which used to slip past Number.isFinite() and take
+    // the *clamp* path (landing on the minimum bound) instead of the
+    // *default* path the comment above promises — confirmed directly:
+    // { wallClockMs: null } produced 100, not the documented 5000.
+    // Restricting to actual numbers/numeric strings before coercing closes
+    // that gap without changing behavior for any input that was already
+    // being treated as numeric.
+    const raw = rawLimits?.[key];
+    const isNumericInput = (typeof raw === 'number' || typeof raw === 'string') && raw !== '';
+    const value = isNumericInput ? Number(raw) : NaN;
     clean[key] = Number.isFinite(value)
-      ? Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)))
+      ? Math.min(limBounds.max, Math.max(limBounds.min, Math.trunc(value)))
       : DEFAULT_LIMITS[key];
   }
   return clean;
@@ -361,10 +397,20 @@ async function spawnInSandbox({ id, hostDir, argv, extraBinds, env, boxWritable,
     let stdout = '', stderr = '', truncated = false, verdict = null, chunkCount = 0;
     const collect = (chunk, which) => {
       const room = lim.outputBytes - (stdout.length + stderr.length);
-      if (room <= 0 || chunkCount >= MAX_CHUNKS) {
+      const overByteBudget = room <= 0;
+      const overChunkBudget = chunkCount >= MAX_CHUNKS;
+      if (overByteBudget || overChunkBudget) {
         if (!truncated) {
           truncated = true;
-          verdict ??= 'output_limit';
+          // MAX_CHUNKS guards a different resource than outputBytes — a
+          // program that flushes very frequently in tiny writes (a
+          // heartbeat/progress loop) can hit the chunk-count cap while
+          // nowhere near the byte budget. Labeling that 'output_limit' told
+          // the caller "you produced too much output" when what actually
+          // happened was "you flushed too often" — confirmed directly:
+          // 4500 rapid one-line prints hit chunkCount===4000 at only 18.8KB,
+          // far under even the default 64KB byte cap.
+          verdict ??= overByteBudget ? 'output_limit' : 'chunk_limit';
           killCgroup(cgroup);
         }
         return;
@@ -421,6 +467,20 @@ async function spawnInSandbox({ id, hostDir, argv, extraBinds, env, boxWritable,
 
       child.on('close', (code, signal) => settle({ code, signal }));
 
+      // Node never emits 'close' for a child that failed to launch at all
+      // (ENOENT/EACCES, or EMFILE/EAGAIN/ENOMEM under fd/process exhaustion
+      // — realistic under the concurrent load this service is built to
+      // handle) — it emits 'error' instead, and an 'error' event with no
+      // listener throws synchronously, crashing the entire process rather
+      // than just failing this one request. Confirmed directly: the same
+      // spawn-with-only-a-close-listener pattern against a nonexistent
+      // binary throws an unhandled error with no 'close' ever firing.
+      child.on('error', (err) => {
+        verdict ??= 'spawn_failed';
+        stderr = err.message;
+        settle({ code: null, signal: null });
+      });
+
       const softTimer = setTimeout(() => {
         verdict ??= 'timeout';
         killCgroup(cgroup);
@@ -458,10 +518,10 @@ async function spawnInSandbox({ id, hostDir, argv, extraBinds, env, boxWritable,
   }
 }
 
-export async function run({ language = 'python', code = '', stdin = '', limits = {}, onChunk, onSpawn, onStats } = {}) {
+export async function run({ language = 'python', code = '', stdin = '', limits = {}, limitBounds = LIMIT_BOUNDS, onChunk, onSpawn, onStats } = {}) {
   const spec = IMAGES[language];
   if (!spec) throw new Error(`unknown language: ${language}`);
-  const lim = sanitizeLimits(limits);
+  const lim = sanitizeLimits(limits, limitBounds);
   const id = randomUUID().slice(0, 8);
 
   const hostDir = await mkdtemp(path.join(tmpdir(), 'sandbin-'));

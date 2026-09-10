@@ -47,5 +47,15 @@ export function createRateLimiter({ windowMs = DEFAULT_WINDOW_MS } = {}) {
     return removed;
   }
 
-  return { check, peek, sweep };
+  // For tests: peek() already returns a synthetic {count:0,...} for any
+  // bucket past its own resetAt whether or not it was actually deleted, so
+  // "count reads 0 after sweep" doesn't prove sweep() freed anything — a
+  // sweep() that silently no-ops on buckets.delete() (the exact
+  // unbounded-growth bug sweep() exists to fix) would pass that check too.
+  // size() is the only way to observe the Map actually shrank.
+  function size() {
+    return buckets.size;
+  }
+
+  return { check, peek, sweep, size };
 }

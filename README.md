@@ -103,8 +103,9 @@ left to build. `CGO_ENABLED=0` keeps Go's own network code from needing
 to shell out to `gcc` at compile time for cgo-based resolution.
 
 `verdict` is one of `ok`, `error`, `timeout`, `memory_limit`, `output_limit`,
-`killed`, `setup_failed`, `compile_error`. The result also carries `cpuMs`,
-`peakBytes`, `oomKills` and `pidsMaxHits`, read straight from the cgroup.
+`chunk_limit`, `killed`, `setup_failed`, `spawn_failed`, `compile_error`. The
+result also carries `cpuMs`, `peakBytes`, `oomKills` and `pidsMaxHits`, read
+straight from the cgroup.
 
 `run()` always settles within `wallClockMs + 2s`, no matter what the guest or
 its descendants do. The deadline itself is `cgroup.kill`; the extra two
@@ -544,7 +545,7 @@ on the [benchmarks page](https://sandbin.vercel.app/benchmarks).
 
 ## Status
 
-All seventeen roadmap phases are done: namespace/cgroup/seccomp/rlimit
+All eighteen roadmap phases are done: namespace/cgroup/seccomp/rlimit
 isolation, a bounded and backpressured job queue, a streaming HTTP +
 WebSocket API, Python/Bash/Node/C support plus Go wherever a toolchain is
 available, a minimal browser frontend with a live resource graph and
@@ -556,8 +557,12 @@ comparison, a composite GitHub Action (`action.yml`) for running
 untrusted code as a CI step, and CI running all eight test suites on
 every push — plus a full, on-request audit of the control plane that
 found and fixed a real unauthenticated RCE and a real path-traversal
-bug, alongside several resource leaks (see
+bug, alongside several resource leaks, and a follow-up multi-angle
+review of that same week's diff that found and fixed two process-crash
+risks, a body-size cap the CSRF fix had accidentally bypassed, and a
+WebSocket zombie-connection lockout (see
 [Phase 17](ROADMAP.md#phase-17--a-full-audit-of-the-control-plane-on-request-done)
+and [Phase 18](ROADMAP.md#phase-18--a-multi-angle-review-of-the-whole-weeks-diff-done)
 for the complete, reproduced trail). `npm start` and open it, or
 `npm link` and run `sandbin run script.py`. See [ROADMAP.md](ROADMAP.md) for what was
 actually found building each phase — several real bugs, not just a

@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from './server.mjs';
@@ -30,12 +30,13 @@ function streamRun(baseUrl, runId, { onEvent } = {}) {
 async function withServer(queueLimits, fn, serverOptions = {}) {
   const permalinkDir = await mkdtemp(path.join(tmpdir(), 'sandbin-permalinks-'));
   const apiKeyDir = await mkdtemp(path.join(tmpdir(), 'sandbin-apikeys-'));
-  const { httpServer } = createServer({ queueLimits, permalinkDir, apiKeyDir, ...serverOptions });
+  const server = createServer({ queueLimits, permalinkDir, apiKeyDir, ...serverOptions });
+  const { httpServer } = server;
   await new Promise((resolve) => httpServer.listen(0, resolve));
   const port = httpServer.address().port;
   const baseUrl = `http://127.0.0.1:${port}`;
   try {
-    return await fn(baseUrl);
+    return await fn(baseUrl, server, { permalinkDir, apiKeyDir });
   } finally {
     httpServer.close();
     await rm(permalinkDir, { recursive: true, force: true }).catch(() => {});
@@ -307,33 +308,40 @@ async function testNonJsonContentTypeIsRejectedAsCsrfVector() {
 }
 
 async function testApiKeyHeaderTraversalDoesNotGrantElevatedQuota() {
-  return withServer({}, async (baseUrl) => {
-    const fs = await import('node:fs/promises');
-    const outsideDir = await mkdtemp(path.join(tmpdir(), 'sandbin-outside-'));
-    await fs.writeFile(
+  const outsideDir = await mkdtemp(path.join(tmpdir(), 'sandbin-outside-'));
+  try {
+    await writeFile(
       path.join(outsideDir, 'canary.json'),
       JSON.stringify({ key: 'STOLEN', requestsPerHour: 999999 })
     );
     const traversalHeader = `../${path.basename(outsideDir)}/canary`;
 
-    // If X-Sandbin-Key ever reaches apiKeys.load() unvalidated again, this
-    // resolves outside apiKeyDir to the canary above and every one of
-    // these requests gets accepted under its fake 999999/hour quota. With
-    // the header format checked first, they all fall back to the real
-    // anonymous limit instead.
-    const results = [];
-    for (let i = 0; i < 5; i++) {
-      const res = await post(baseUrl, '/runs', { language: 'python', code: 'print(1)' }, { 'x-sandbin-key': traversalHeader });
-      results.push(res.body.accepted ? 'accepted' : res.body.verdict);
-    }
-    await rm(outsideDir, { recursive: true, force: true }).catch(() => {});
+    return await withServer({}, async (baseUrl) => {
+      // If X-Sandbin-Key ever reaches apiKeys.load() unvalidated again, this
+      // resolves outside apiKeyDir to the canary above and every one of
+      // these requests gets accepted under its fake 999999/hour quota. With
+      // the header format checked first, they all fall back to the real
+      // anonymous limit instead.
+      const results = [];
+      for (let i = 0; i < 5; i++) {
+        const res = await post(baseUrl, '/runs', { language: 'python', code: 'print(1)' }, { 'x-sandbin-key': traversalHeader });
+        results.push(res.body.accepted ? 'accepted' : res.body.verdict);
+      }
 
-    return {
-      name: 'X-Sandbin-Key path traversal does not grant an elevated rate-limit quota',
-      pass: results.filter((r) => r === 'rate_limited').length > 0,
-      detail: results.join(','),
-    };
-  }, { anonymousRequestsPerHour: 3 });
+      return {
+        name: 'X-Sandbin-Key path traversal does not grant an elevated rate-limit quota',
+        pass: results.filter((r) => r === 'rate_limited').length > 0,
+        detail: results.join(','),
+      };
+    }, { anonymousRequestsPerHour: 3 });
+  } finally {
+    // Was cleaned up only as the last statement after five sequential
+    // network calls with nothing guarding it — any one of them throwing
+    // (a hiccup, a future assertion change) left this directory, and the
+    // fabricated {key:'STOLEN', requestsPerHour:999999} file inside it,
+    // on disk permanently.
+    await rm(outsideDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function testUnverifiedKeyHeaderCannotBypassMaxPerKey() {
@@ -363,22 +371,80 @@ async function testUnverifiedKeyHeaderCannotBypassMaxPerKey() {
   });
 }
 
-async function testKeyUsageRejectsPathTraversal() {
-  return withServer({}, async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/keys/${encodeURIComponent('../etc/passwd')}`);
+async function testHeartbeatReapsUnresponsiveSocket() {
+  return withServer(
+    {},
+    async (baseUrl, server) => {
+      const submit = await post(baseUrl, '/runs', { language: 'python', code: 'import time; time.sleep(2)' });
+      const runId = submit.body.runId;
+
+      const reaped = await new Promise((resolve) => {
+        const ws = new WebSocket(`${baseUrl.replace('http', 'ws')}/runs/${runId}/stream`);
+        ws.on('open', () => {
+          setTimeout(() => {
+            const record = server.runs.get(runId);
+            const serverSocket = [...record.sockets][0];
+            // A real ws client auto-pongs, so a genuinely live connection
+            // would just toggle isAlive back to true every cycle no matter
+            // what we force it to here — to simulate a connection that
+            // truly can't be reached (dropped network, no RST ever sent),
+            // the ping itself has to go nowhere, not just the flag.
+            serverSocket.ping = () => {};
+            serverSocket.isAlive = false;
+          }, 30);
+        });
+        ws.on('close', () => resolve(true));
+        setTimeout(() => resolve(false), 1500);
+      });
+
+      return {
+        name: 'a socket that stops responding to heartbeat pings is terminated, freeing its slot',
+        pass: reaped,
+        detail: reaped ? 'zombie socket was terminated by the heartbeat sweep' : 'socket was never reaped within 1.5s of two 100ms heartbeat cycles',
+      };
+    },
+    { heartbeatIntervalMs: 100 }
+  );
+}
+
+// These two used to send encodeURIComponent('../etc/passwd')-style
+// payloads and assert 404 — which passed even with the format guard
+// completely deleted, proven by disabling it and rerunning the exact same
+// request: encodeURIComponent turns '/' into '%2F', Node never decodes
+// req.url before route matching, so the payload always lands as one
+// opaque, nonexistent-file segment. Separately, a *raw*, un-encoded
+// multi-segment traversal also can't reach these two routes at all: the
+// `[^/]+` route regex itself can't match a path containing a literal '/',
+// so nothing shaped like a real traversal ever matches the route in the
+// first place — that's not an accident these tests can meaningfully probe
+// either. What the explicit format check actually guards against is
+// something else: an id that's the *wrong shape* but still points at a
+// real file sitting in the store directory. These tests prove that by
+// planting one and confirming it's still refused.
+async function testKeyUsageRejectsNonConformingIdEvenIfFileExists() {
+  return withServer({}, async (baseUrl, _server, { apiKeyDir }) => {
+    await writeFile(
+      path.join(apiKeyDir, 'whatever.json'),
+      JSON.stringify({ key: 'whatever', requestsPerHour: 999999, createdAt: Date.now() })
+    );
+    const res = await fetch(`${baseUrl}/keys/whatever`);
     return {
-      name: 'GET /keys/:key rejects a traversal-shaped key as 404, never touches the filesystem',
+      name: 'GET /keys/:key rejects a non sb_-shaped id as 404 even when a real file exists under that name',
       pass: res.status === 404,
       detail: `status=${res.status}`,
     };
   });
 }
 
-async function testPermalinkDataRejectsPathTraversal() {
-  return withServer({}, async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/r/${encodeURIComponent('../../etc/passwd')}/data`);
+async function testPermalinkDataRejectsNonConformingIdEvenIfFileExists() {
+  return withServer({}, async (baseUrl, _server, { permalinkDir }) => {
+    await writeFile(
+      path.join(permalinkDir, 'whatever.json'),
+      JSON.stringify({ id: 'whatever', language: 'python', code: '', result: { verdict: 'ok' }, savedAt: Date.now() })
+    );
+    const res = await fetch(`${baseUrl}/r/whatever/data`);
     return {
-      name: 'GET /r/:id/data rejects a non-UUID id as 404, never touches the filesystem',
+      name: 'GET /r/:id/data rejects a non-UUID id as 404 even when a real file exists under that name',
       pass: res.status === 404,
       detail: `status=${res.status}`,
     };
@@ -508,8 +574,9 @@ const CASES = [
   testNonJsonContentTypeIsRejectedAsCsrfVector,
   testApiKeyHeaderTraversalDoesNotGrantElevatedQuota,
   testUnverifiedKeyHeaderCannotBypassMaxPerKey,
-  testKeyUsageRejectsPathTraversal,
-  testPermalinkDataRejectsPathTraversal,
+  testHeartbeatReapsUnresponsiveSocket,
+  testKeyUsageRejectsNonConformingIdEvenIfFileExists,
+  testPermalinkDataRejectsNonConformingIdEvenIfFileExists,
   testReconnectAfterFinish,
   testUnknownRunIdReturnsError,
   testMetricsReflectARealFinishedRun,

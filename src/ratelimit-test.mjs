@@ -65,19 +65,28 @@ function testSweepRemovesOnlyExpiredBuckets() {
   for (let i = 0; i < 50; i++) limiter.check(`old-${i}`, 20, { now: start });
   limiter.check('fresh', 20, { now: start + 1500 });
 
+  const sizeBeforeSweep = limiter.size();
   const removedTooEarly = limiter.sweep({ now: start + 500 });
   const removed = limiter.sweep({ now: start + 1500 });
+  // peek() alone can't tell "sweep deleted this" from "sweep no-op'd and
+  // peek's own expiry check masked it" — it synthesizes {count:0} for any
+  // bucket past its resetAt whether or not the Map entry still exists.
+  // size() is the only assertion below that actually proves buckets.delete
+  // ran, closing the gap a broken-but-silent sweep() would slip through.
+  const sizeAfterSweep = limiter.size();
   const oldIsFreshAgain = limiter.peek('old-0', 20, { now: start + 1600 });
   const freshSurvived = limiter.peek('fresh', 20, { now: start + 1600 });
 
   return {
     name: 'sweep removes only buckets past their own resetAt, never a live one',
     pass:
+      sizeBeforeSweep === 51 &&
       removedTooEarly === 0 &&
       removed === 50 &&
+      sizeAfterSweep === 1 &&
       oldIsFreshAgain.count === 0 &&
       freshSurvived.count === 1,
-    detail: `tooEarly=${removedTooEarly} removed=${removed} oldReset=${JSON.stringify(oldIsFreshAgain)} freshSurvived=${JSON.stringify(freshSurvived)}`,
+    detail: `sizeBefore=${sizeBeforeSweep} tooEarly=${removedTooEarly} removed=${removed} sizeAfter=${sizeAfterSweep} oldReset=${JSON.stringify(oldIsFreshAgain)} freshSurvived=${JSON.stringify(freshSurvived)}`,
   };
 }
 

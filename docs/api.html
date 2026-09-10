@@ -125,10 +125,12 @@
     <tr><td><code>error</code></td><td>exited nonzero, or crashed</td></tr>
     <tr><td><code>timeout</code></td><td>hit <code>wallClockMs</code></td></tr>
     <tr><td><code>memory_limit</code></td><td>cgroup OOM-killed it</td></tr>
-    <tr><td><code>output_limit</code></td><td>stdout+stderr exceeded the buffer cap</td></tr>
+    <tr><td><code>output_limit</code></td><td>stdout+stderr exceeded the byte cap</td></tr>
+    <tr><td><code>chunk_limit</code></td><td>hit the chunk-<em>count</em> cap while still under the byte cap &mdash; a program flushing very frequently in tiny writes, not one producing too much output</td></tr>
     <tr><td><code>killed</code></td><td>the supervisor's own hard backstop fired</td></tr>
     <tr><td><code>compile_error</code></td><td><code>c</code> only &mdash; compilation itself failed; <code>stderr</code> is the compiler's diagnostic</td></tr>
     <tr><td><code>setup_failed</code></td><td>cgroup assignment failed &mdash; reported, never silently ignored</td></tr>
+    <tr><td><code>spawn_failed</code></td><td>the guest process itself never launched (fd/process exhaustion on the host) &mdash; <code>stderr</code> carries the underlying error</td></tr>
   </table>
   <p>Every result also carries <code>cpuMs</code>, <code>peakBytes</code>, <code>oomKills</code> and <code>pidsMaxHits</code>, read straight from the cgroup.</p>
 

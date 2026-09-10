@@ -91,17 +91,31 @@ async function testTwoIssuedKeysAreDistinct() {
 
 async function testSweepRemovesOnlyExpiredKeys() {
   return withStore(async (store, dir) => {
+    // Fully clock-injected, not just the expired side: the original version
+    // backdated `old` by a fixed amount but left `fresh`'s "still valid"
+    // check riding on however much real wall-clock time the actual disk
+    // I/O (issue, backdate, sweep, reload) happened to take against a
+    // 1000ms TTL with zero margin — confirmed flaky by replaying the same
+    // sequence with a simulated 1100ms slowdown inserted, which flipped
+    // freshStillLoads to null. Pinning every check to one fixed `now`
+    // removes real time from the test entirely.
+    const now = Date.now();
     const fresh = await store.issue();
     const old = await store.issue();
 
+    const freshPath = path.join(dir, `${fresh.key}.json`);
+    const freshRecord = JSON.parse(await readFile(freshPath, 'utf8'));
+    freshRecord.createdAt = now;
+    await writeFile(freshPath, JSON.stringify(freshRecord));
+
     const oldPath = path.join(dir, `${old.key}.json`);
     const oldRecord = JSON.parse(await readFile(oldPath, 'utf8'));
-    oldRecord.createdAt = Date.now() - 5000;
+    oldRecord.createdAt = now - 5000;
     await writeFile(oldPath, JSON.stringify(oldRecord));
 
-    const removed = await store.sweep();
-    const freshStillLoads = await store.load(fresh.key);
-    const oldIsGone = await store.load(old.key);
+    const removed = await store.sweep({ now });
+    const freshStillLoads = await store.load(fresh.key, { now });
+    const oldIsGone = await store.load(old.key, { now });
 
     return {
       name: 'sweep removes keys past their TTL, leaves ones still within it',

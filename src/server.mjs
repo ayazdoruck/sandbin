@@ -7,7 +7,7 @@ import { WebSocketServer } from 'ws';
 import { createQueue } from './queue.mjs';
 import { IMAGES } from './sandbox.mjs';
 import { createPermalinkStore } from './permalinks.mjs';
-import { createApiKeyStore } from './apikeys.mjs';
+import { createApiKeyStore, API_KEY_FORMAT } from './apikeys.mjs';
 import { createRateLimiter } from './ratelimit.mjs';
 import { createMetricsStore } from './metrics.mjs';
 
@@ -20,6 +20,7 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 // couple (the original tab, maybe a reconnect); this caps it well above
 // that without leaving it open-ended.
 const MAX_SOCKETS_PER_RUN = 10;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 const ANONYMOUS_REQUESTS_PER_HOUR = 20;
 const KEY_ISSUANCE_PER_HOUR = 5;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -39,8 +40,11 @@ const DEFAULT_APIKEY_DIR = path.join(process.cwd(), 'data', 'keys');
 // is rejected before it ever reaches a filesystem call, on every route
 // that accepts one of these ids, not just the one that was provably
 // exploitable.
+// API_KEY_FORMAT is imported from apikeys.mjs (the module that actually
+// generates key strings) rather than hand-matched here — a copy of the
+// shape re-typed at this validation site could silently drift from what
+// issue() really produces.
 const RUN_ID_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const API_KEY_FORMAT = /^sb_[0-9a-f]{32}$/;
 
 const STATIC_ROUTES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
@@ -83,22 +87,39 @@ function safeEqual(a, b) {
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     const contentType = req.headers['content-type'] ?? '';
-    if (!/^application\/json\b/i.test(contentType)) {
-      reject(new Error('content-type must be application/json'));
-      return;
-    }
+    const isJson = /^application\/json\b/i.test(contentType);
+    // The 'data' listener — and MAX_BODY_BYTES with it — must be attached
+    // unconditionally, before any content-type-based early return: without
+    // it, this function returns before ever consuming the body, and Node's
+    // own keep-alive drain reads it anyway once the response finishes, with
+    // no size limit at all. Confirmed with a 200MB body under
+    // Content-Type: text/plain completing in 93ms, fully absorbed, for
+    // exactly the request shape the check below exists to catch.
+    //
+    // A non-JSON body is never buffered (`chunks.push` is skipped) since
+    // it's already going to be rejected — but it's still drained and still
+    // counted toward MAX_BODY_BYTES, and req.destroy() only fires once that
+    // cap is actually exceeded, not on the content-type mismatch alone:
+    // destroying eagerly tears down the socket before the 400 response
+    // this same code writes, turning a clean rejection into a bare
+    // connection reset for the (much more likely) case of a client that
+    // just sent the wrong header on an otherwise-reasonable body.
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
         req.destroy();
-        reject(new Error('request body too large'));
+        reject(new Error(isJson ? 'request body too large' : 'content-type must be application/json'));
         return;
       }
-      chunks.push(chunk);
+      if (isJson) chunks.push(chunk);
     });
     req.on('end', () => {
+      if (!isJson) {
+        reject(new Error('content-type must be application/json'));
+        return;
+      }
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
       } catch (err) {
@@ -116,6 +137,7 @@ export function createServer({
   rateLimitWindowMs,
   anonymousRequestsPerHour = ANONYMOUS_REQUESTS_PER_HOUR,
   metricsAuth = null,
+  heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS,
 } = {}) {
   const queue = createQueue(queueLimits);
   const runs = new Map();
@@ -272,6 +294,8 @@ export function createServer({
       socket.send(JSON.stringify({ type: 'queued', position: record.position }));
     }
 
+    socket.isAlive = true;
+    socket.on('pong', () => { socket.isAlive = true; });
     record.sockets.add(socket);
     socket.on('close', () => record.sockets.delete(socket));
     socket.on('message', (raw) => {
@@ -348,6 +372,15 @@ export function createServer({
           // full budget. A verified key still partitions however its
           // holder likes; anything else falls back to IP, which isn't
           // something a single caller can mint a new one of per request.
+          //
+          // Real side effect of that fallback, worth stating plainly: two
+          // unrelated anonymous callers behind the same NAT/shared IP (an
+          // office, a mobile carrier) now share one maxPerKey budget too —
+          // before this fix, each could pick its own arbitrary header
+          // string and get an independent budget, which was also exactly
+          // the bypass this closes. There's no way to tell "two legitimate
+          // neighbors" apart from "one caller spraying fake keys" from IP
+          // alone; an issued key is the only way to get a private budget.
           const issuedKey = headerKey && API_KEY_FORMAT.test(headerKey) ? await apiKeys.load(headerKey) : null;
           const concurrencyKey = issuedKey ? headerKey : ip;
           const rateLimitId = issuedKey ? `key:${issuedKey.key}` : `ip:${ip}`;
@@ -430,6 +463,31 @@ export function createServer({
     }
     wss.handleUpgrade(req, socket, head, (ws) => attachSocket(match[1], ws));
   });
+
+  // record.sockets only ever shrank on a clean WebSocket 'close' — a
+  // connection that drops uncleanly (network switch, laptop sleep, a NAT
+  // timeout) leaves a zombie entry that nothing removes until the
+  // underlying TCP connection eventually dies on its own, which can take
+  // a long time or never happen at all. A client reconnecting repeatedly
+  // over a flaky connection could accumulate zombie entries toward
+  // MAX_SOCKETS_PER_RUN and get locked out of its own run with "too many
+  // connections" despite never having more than one genuinely live
+  // connection. Standard ws ping/pong: anything that hasn't ponged since
+  // the last sweep is presumed dead and terminated, which fires 'close'
+  // and lets attachSocket's own cleanup run normally.
+  const heartbeatTimer = setInterval(() => {
+    for (const record of runs.values()) {
+      for (const socket of record.sockets) {
+        if (socket.isAlive === false) {
+          socket.terminate();
+          continue;
+        }
+        socket.isAlive = false;
+        socket.ping();
+      }
+    }
+  }, heartbeatIntervalMs).unref();
+  httpServer.on('close', () => clearInterval(heartbeatTimer));
 
   return { httpServer, queue, runs, permalinks, apiKeys, rateLimiter, keyIssuanceLimiter };
 }

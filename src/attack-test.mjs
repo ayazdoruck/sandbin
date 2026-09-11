@@ -64,11 +64,19 @@ const CASES = [
 
   { name: 'chunk flood stays under the byte cap', language: 'python',
     code: 'while True: print("x")',
-    // The real point isn't a specific byte count (Node batches multiple
-    // writes per 'data' event, so the exact figure varies run to run) —
-    // it's that this stays strictly under the 64KB default outputBytes
-    // cap, proving chunk_limit fired because of chunk *count*, not bytes.
-    check: (r) => r.verdict === 'chunk_limit' && r.truncated && r.stdout.length < 64 * 1024 },
+    // The default outputBytes (64KB) left too thin a margin to be
+    // reliable across hosts: Node batches multiple writes per 'data'
+    // event, and how much lands in one batch depends on how promptly the
+    // event loop drains the pipe. Under a more loaded CI runner this
+    // batched enough bytes per chunk to cross 64KB before chunkCount
+    // reached MAX_CHUNKS, flipping the verdict to output_limit — failing
+    // a test whose whole point is chunk_limit. Confirmed against a real
+    // failing CI run. The generous override here isn't testing a smaller
+    // real-world cap, it's removing that race so the assertion tests what
+    // it says it tests: MAX_CHUNKS firing because of chunk *count*, not
+    // bytes.
+    limits: { outputBytes: 4 * 1024 * 1024 },
+    check: (r) => r.verdict === 'chunk_limit' && r.truncated && r.stdout.length < 1024 * 1024 },
 
   { name: 'tmpfs bounded', language: 'python',
     code: 'open("/tmp/big","wb").write(b"A" * (64*1024*1024)); print("FILLED")',

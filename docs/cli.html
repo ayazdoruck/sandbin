@@ -129,6 +129,42 @@ exit code    0</code></pre>
     </p>
   </div>
 
+  <h2>If the connection drops mid-run: <code>--reconnect</code></h2>
+  <p>
+    <code>--server</code> mode is two steps &mdash; <code>POST /runs</code>
+    accepts the job and hands back a <code>runId</code>, then a WebSocket
+    streams it. Those two steps can be separated by an arbitrary amount of
+    time and an arbitrary number of dropped connections without losing the
+    run itself: the server keeps executing regardless of whether anything
+    is attached to watch it, and <code>GET /runs/:runId/stream</code> can be
+    attached to at any point &mdash; while it's still running, it replays
+    every buffered <code>chunk</code>/<code>stats</code> event and then
+    keeps streaming live; once it's finished, it immediately replays the
+    final result and closes. The CLI now prints the <code>runId</code> the
+    moment a run is accepted, specifically so a caller has something to
+    reconnect with if the socket dies before <code>finished</code> arrives:
+  </p>
+  <pre><code>$ sandbin run server.js --server localhost:8080
+sandbin: run 7e2b1c4a-...-91fd accepted — if this connection drops, reconnect with: sandbin run --server localhost:8080 --reconnect 7e2b1c4a-...-91fd
+(connection drops here)
+sandbin: connection to run 7e2b1c4a-...-91fd closed before it finished
+sandbin: the run may still be in progress — reconnect with: sandbin run --server localhost:8080 --reconnect 7e2b1c4a-...-91fd
+
+$ sandbin run --server localhost:8080 --reconnect 7e2b1c4a-...-91fd
+... streams the rest, or the final result if it already finished ...</code></pre>
+  <p>
+    Two things worth being precise about, since they matter for unattended
+    callers specifically. First, <code>--reconnect</code> attaches to an
+    existing run &mdash; it never submits a new one, so it's safe to retry
+    without risking a duplicate job. Second, <strong>a plain
+    <code>sandbin run</code> retry is not idempotent</strong>:
+    <code>POST /runs</code> has no idempotency key or dedup concept, so
+    re-running the original command after a drop submits a genuinely
+    independent sandbox job rather than resuming the first one. If a caller
+    can't hold onto the printed <code>runId</code>, that's the boundary
+    it's up against today.
+  </p>
+
   <h2>Other commands</h2>
   <table>
     <tr><th>Command</th><th>Does</th></tr>
@@ -146,6 +182,7 @@ exit code    0</code></pre>
     <tr><td><code>-i, --stdin &lt;file&gt;</code></td><td>file whose contents become the guest's stdin (<code>-</code> reads this process's own stdin)</td></tr>
     <tr><td><code>-s, --server &lt;url&gt;</code></td><td>submit to a running server instead of running locally (env <code>SANDBIN_SERVER</code>)</td></tr>
     <tr><td><code>-k, --key &lt;key&gt;</code></td><td>API key sent as <code>X-Sandbin-Key</code> (env <code>SANDBIN_KEY</code>)</td></tr>
+    <tr><td><code>--reconnect &lt;runId&gt;</code></td><td>skip submission, reattach to a run already in flight on <code>--server</code></td></tr>
     <tr><td><code>--json</code></td><td>print the full result object once, instead of streaming</td></tr>
     <tr><td><code>--memory</code> / <code>--cpu</code> / <code>--timeout</code> / <code>--pids</code></td><td>override the matching resource limit</td></tr>
   </table>

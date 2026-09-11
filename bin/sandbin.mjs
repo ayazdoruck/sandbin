@@ -37,6 +37,9 @@ Run options:
   -s, --server <url>     submit to a running sandbin server instead of
                           running locally (env SANDBIN_SERVER)
   -k, --key <key>        API key sent as X-Sandbin-Key (env SANDBIN_KEY)
+  --reconnect <runId>    skip submission, reattach to a run already in
+                          flight on --server (printed when a run is
+                          accepted, and again if the connection drops)
   --json                 print the full result as JSON instead of streaming
   --memory <bytes>       override the memory limit
   --cpu <percent>        override the CPU limit
@@ -48,6 +51,7 @@ Examples:
   sandbin run -l python -e 'print(1 + 1)'
   cat script.sh | sandbin run -l bash
   sandbin run server.js --server localhost:8080 --json
+  sandbin run --server localhost:8080 --reconnect a1b2c3d4-...
   sandbin keys create --server sandbin.example.com`);
 }
 
@@ -132,6 +136,54 @@ async function runLocal({ language, code, stdin, limits, json }) {
   });
 }
 
+// Shared by a fresh submission and a bare --reconnect: attaches to an
+// existing runId's stream and resolves once the run is done, one way or
+// another. The `settled` guard matters because a clean 'close' can arrive
+// after we've already resolved via 'finished'/'error' (we call ws.close()
+// ourselves in both cases) — without it, the close handler below would fire
+// a second, misleading "connection closed before it finished" message.
+function watchRun({ base, runId, json }) {
+  const wsUrl = `${base.replace(/^http/, 'ws')}/runs/${runId}/stream`;
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const ws = new WebSocket(wsUrl);
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString('utf8'));
+      if (msg.type === 'chunk' && !json) {
+        process[msg.stream === 'stdout' ? 'stdout' : 'stderr'].write(msg.text);
+      }
+      if (msg.type === 'finished') {
+        settle(msg.result);
+        ws.close();
+      }
+      if (msg.type === 'error') {
+        console.error(`sandbin: ${msg.message}`);
+        settle(null);
+        ws.close();
+      }
+    });
+    ws.on('error', (err) => {
+      console.error(`sandbin: websocket error (${err.message})`);
+      settle(null);
+    });
+    // A drop that never surfaces a socket-level 'error' (server restart,
+    // proxy timeout, network blip) still fires 'close'. The run itself keeps
+    // going server-side either way — only this connection died — so point
+    // the caller at --reconnect instead of leaving the promise hanging.
+    ws.on('close', () => {
+      if (settled) return;
+      console.error(`sandbin: connection to run ${runId} closed before it finished`);
+      console.error(`sandbin: the run may still be in progress — reconnect with: sandbin run --server ${base} --reconnect ${runId}`);
+      settle(null);
+    });
+  });
+}
+
 async function runRemote({ server, key, language, code, stdin, limits, json }) {
   const base = normalizeServer(server);
   let res;
@@ -152,29 +204,18 @@ async function runRemote({ server, key, language, code, stdin, limits, json }) {
     return null;
   }
 
-  const wsUrl = `${base.replace(/^http/, 'ws')}/runs/${body.runId}/stream`;
-  return new Promise((resolve) => {
-    const ws = new WebSocket(wsUrl);
-    ws.on('message', (raw) => {
-      const msg = JSON.parse(raw.toString('utf8'));
-      if (msg.type === 'chunk' && !json) {
-        process[msg.stream === 'stdout' ? 'stdout' : 'stderr'].write(msg.text);
-      }
-      if (msg.type === 'finished') {
-        resolve(msg.result);
-        ws.close();
-      }
-      if (msg.type === 'error') {
-        console.error(`sandbin: ${msg.message}`);
-        resolve(null);
-        ws.close();
-      }
-    });
-    ws.on('error', (err) => {
-      console.error(`sandbin: websocket error (${err.message})`);
-      resolve(null);
-    });
-  });
+  console.error(`sandbin: run ${body.runId} accepted — if this connection drops, reconnect with: sandbin run --server ${base} --reconnect ${body.runId}`);
+  return watchRun({ base, runId: body.runId, json });
+}
+
+function emitResult(result, opts) {
+  if (opts.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    printOutputIfMissed(result);
+    printSummary(result);
+  }
+  process.exitCode = result.verdict === 'ok' ? 0 : 1;
 }
 
 async function cmdRun(argv) {
@@ -185,6 +226,7 @@ async function cmdRun(argv) {
     server: process.env.SANDBIN_SERVER || null,
     key: process.env.SANDBIN_KEY || null,
     json: false,
+    reconnect: null,
     limits: {},
   };
   const positional = [];
@@ -198,6 +240,7 @@ async function cmdRun(argv) {
       case '-s': case '--server': opts.server = argv[++i]; break;
       case '-k': case '--key': opts.key = argv[++i]; break;
       case '--json': opts.json = true; break;
+      case '--reconnect': opts.reconnect = argv[++i]; break;
       case '--memory': opts.limits.memoryBytes = Number(argv[++i]); break;
       case '--cpu': opts.limits.cpuPercent = Number(argv[++i]); break;
       case '--timeout': opts.limits.wallClockMs = Number(argv[++i]); break;
@@ -210,6 +253,24 @@ async function cmdRun(argv) {
         }
         positional.push(arg);
     }
+  }
+
+  // A bare reconnect skips submission entirely — it attaches to a runId a
+  // previous invocation already got back (see the "run accepted" / "closed
+  // before it finished" messages runRemote and watchRun print), so no
+  // code/language is needed at all.
+  if (opts.reconnect) {
+    if (!opts.server) {
+      console.error('sandbin: --reconnect requires --server <url>');
+      process.exitCode = 1;
+      return;
+    }
+    const result = await watchRun({ base: normalizeServer(opts.server), runId: opts.reconnect, json: opts.json });
+    if (!result) {
+      process.exitCode = 1;
+      return;
+    }
+    return emitResult(result, opts);
   }
 
   const file = positional[0] ?? null;
@@ -241,14 +302,7 @@ async function cmdRun(argv) {
     return;
   }
 
-  if (opts.json) {
-    console.log(JSON.stringify(result, null, 2));
-  } else {
-    printOutputIfMissed(result);
-    printSummary(result);
-  }
-
-  process.exitCode = result.verdict === 'ok' ? 0 : 1;
+  emitResult(result, opts);
 }
 
 async function cmdLanguages() {

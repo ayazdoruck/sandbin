@@ -43,7 +43,7 @@ Three details matter more than they look:
   ceiling ever being touched.
 - **`cgroup.kill` kills the whole tree in one write.** No PID chasing, no
   processes surviving the reaper.
-- **The seccomp filter is a strict allowlist, not a blocklist.** 142
+- **The seccomp filter is a strict allowlist, not a blocklist.** 146
   syscalls are permitted — enough for Python, Bash, Node and a compiled C
   binary, nothing more; everything else — `ptrace`, `mount`, `unshare`,
   `io_uring_setup`, raw sockets, nested user namespaces via `clone` — returns
@@ -293,6 +293,19 @@ protocol the web frontend uses — useful for driving a sandbin instance
 running somewhere else. `-k/--key` (or `SANDBIN_KEY`) sends an issued API
 key along; `SANDBIN_SERVER` sets a default server so `--server` doesn't
 need repeating on every call.
+
+The run itself keeps executing server-side independent of any specific
+WebSocket connection, so a drop before `finished` doesn't lose it. The CLI
+prints the accepted run's id up front for exactly this case; reattach to it
+with `--reconnect <runId>` instead of resubmitting:
+
+```bash
+sandbin run --server localhost:8080 --reconnect 7e2b1c4a-...-91fd
+```
+
+Retrying with a plain `sandbin run` is not the same thing — `POST /runs`
+has no idempotency key, so that submits a genuinely new job rather than
+resuming the dropped one.
 
 `sandbin languages` lists what the current host can actually run (`go`
 only appears if a toolchain was found). `sandbin keys create` and

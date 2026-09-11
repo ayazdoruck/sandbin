@@ -1113,16 +1113,53 @@ it directly: 51 buckets before sweeping, 1 after.
 
 108/108 tests passing (was 105).
 
+## Phase 19 — a real question about `--server` reliability, answered by fixing the gap it named (done)
+
+A comment on a public post asked, correctly: if the WebSocket drops before
+`finished`, can `sandbin run --server` reconnect to that run, or does
+retrying submit a second job? Answering it honestly required checking, not
+assuming — and checking turned up an actual bug alongside the missing
+feature.
+
+- **The bug:** `runRemote()` had no `ws.on('close', ...)` handler. A drop
+  that fires a clean `close` without ever emitting a socket-level `error`
+  (server restart, proxy timeout, network blip) left the CLI's Promise
+  permanently unresolved — the process would hang forever instead of
+  exiting with a clear failure. Only the `error` event was handled; `close`
+  wasn't, so nothing ever settled the Promise on that path.
+- **The missing feature:** the server-side protocol already supported
+  reconnecting to a run in progress or replaying a finished one
+  (`attachSocket()`, covered by the "reconnecting after finish replays the
+  final result" server test) — but the CLI never exposed the `runId` to
+  the caller anywhere, so there was no way to actually use it. Re-running
+  `sandbin run` always submitted a brand-new job; `POST /runs` has no
+  idempotency key.
+- **The fix:** extracted the WebSocket-watching logic into a shared
+  `watchRun()`, added a `settled` guard so a `close` arriving after an
+  already-resolved `finished`/`error` is a no-op, and added a
+  `ws.on('close', ...)` handler that resolves cleanly instead of hanging.
+  The CLI now prints the accepted run's id up front, and again if the
+  connection drops, specifically so a caller has something to act on. A
+  new `--reconnect <runId>` flag skips submission and reattaches directly
+  — for a caller that kept the id, retrying is now safe and doesn't spawn
+  a duplicate sandbox.
+- Three new CLI tests, run against a real server: reconnecting to a
+  finished run replays its result rather than resubmitting, reconnecting
+  to an unknown id fails cleanly (not a hang), and `--reconnect` without
+  `--server` is rejected immediately.
+
+The honest remaining boundary, documented rather than papered over: a
+plain `sandbin run` retry is still not idempotent. `--reconnect` only
+helps a caller that captured the `runId` before the drop; there is still
+no way to resume by resubmitting the same code.
+
+111/111 tests passing (was 108).
+
 ## What's left
 
 Closing real gaps rather than adding breadth for its own sake, roughly in
 the order they're worth doing:
 
-- **A dedicated CLI docs page.** `sandbin.vercel.app` documents
-  `/metrics` (folded into the API page) but the CLI itself is still only
-  in `README.md`, not on the deployed site — everything else got folded
-  into an existing page; the CLI is arguably substantial enough to
-  warrant its own.
 - **Embeddable widget.** A small script + iframe another site could drop
   in to embed a working sandbin playground, reusing the existing
   streaming API rather than building a second one.

@@ -127,6 +127,45 @@ async function testRemoteRejectionExitsNonZero() {
   });
 }
 
+async function testReconnectReplaysAFinishedRun() {
+  return withServer(async (baseUrl) => {
+    // The server-assigned runId only ever surfaces in this acceptance
+    // message — sandbox.run()'s own `id` field (in the --json result) is an
+    // unrelated internal slug used for cgroup/bwrap naming, not the HTTP
+    // layer's runId, so it can't be used to reconnect.
+    const first = await runCli(['run', '-l', 'python', '-e', 'print("first pass")', '--server', baseUrl, '--json']);
+    const runId = /run ([0-9a-f-]+) accepted/.exec(first.stderr)?.[1];
+    if (!runId) return { name: 'reconnect: replays a finished run by id', pass: false, detail: `no runId in stderr: ${first.stderr.trim()}` };
+    const { code, stdout } = await runCli(['run', '--server', baseUrl, '--reconnect', runId, '--json']);
+    const parsed = JSON.parse(stdout || '{}');
+    return {
+      name: 'reconnect: replays a finished run by id instead of resubmitting',
+      pass: code === 0 && parsed.stdout?.includes('first pass'),
+      detail: stdout.trim().slice(0, 120),
+    };
+  });
+}
+
+async function testReconnectUnknownRunIdFailsCleanly() {
+  return withServer(async (baseUrl) => {
+    const { code, stderr } = await runCli(['run', '--server', baseUrl, '--reconnect', 'not-a-real-run-id']);
+    return {
+      name: 'reconnect: unknown run id reported cleanly, not a hang or a stack trace',
+      pass: code === 1 && stderr.includes('unknown run id'),
+      detail: stderr.trim(),
+    };
+  });
+}
+
+async function testReconnectWithoutServerFailsCleanly() {
+  const { code, stderr } = await runCli(['run', '--reconnect', 'whatever']);
+  return {
+    name: 'reconnect: requires --server, rejected immediately without one',
+    pass: code === 1 && stderr.includes('--reconnect requires --server'),
+    detail: stderr.trim(),
+  };
+}
+
 async function testRemoteKeysCreateAndStatus() {
   return withServer(async (baseUrl) => {
     const created = await runCli(['keys', 'create', '--server', baseUrl]);
@@ -150,6 +189,9 @@ const CASES = [
   testCompileErrorPrintsCompilerDiagnostic,
   testRemoteRunStreamsOverServer,
   testRemoteRejectionExitsNonZero,
+  testReconnectReplaysAFinishedRun,
+  testReconnectUnknownRunIdFailsCleanly,
+  testReconnectWithoutServerFailsCleanly,
   testRemoteKeysCreateAndStatus,
 ];
 

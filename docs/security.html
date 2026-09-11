@@ -294,6 +294,55 @@
     <code>application/json</code> before parsing.
   </p>
 
+  <h2>A review of that same week's own diff</h2>
+  <p>
+    Everything above, checked again: a ten-angle pass over every commit
+    from the RCE fix through the CSRF fix (~1300 lines), specifically to
+    catch what a security-focused read might have missed on its own
+    territory. Full trail in
+    <a href="https://github.com/ayazdoruck/sandbin/blob/main/ROADMAP.md#phase-18--a-multi-angle-review-of-the-whole-weeks-diff-done">ROADMAP.md</a>.
+  </p>
+
+  <h3>The CSRF fix above had its own bypass of the body-size cap</h3>
+  <p>
+    <code>readJsonBody()</code> rejected a bad <code>Content-Type</code>
+    before the listener enforcing the 2&nbsp;MB body cap was ever attached
+    &mdash; so for exactly the request shape the fix above targets, there
+    was no size limit at all. Confirmed with a 200&nbsp;MB body under
+    <code>Content-Type: text/plain</code> fully absorbed in 93&nbsp;ms. The
+    first attempt at a fix (<code>req.destroy()</code> on mismatch) closed
+    that but broke the client's ability to ever receive the 400, since
+    destroying the request also tears down the socket the response writes
+    to. Landed on: the size cap always applies regardless of content type,
+    and the connection is only torn down once it's actually exceeded.
+  </p>
+
+  <h3>A spawn failure could crash the whole process, not just one run</h3>
+  <p>
+    The supervisor never registered <code>child.on('error', ...)</code>.
+    Node emits <code>'error'</code>, not <code>'close'</code>, for a
+    child that fails to launch at all &mdash; <code>ENOENT</code>, or
+    <code>EMFILE</code>/<code>EAGAIN</code>/<code>ENOMEM</code> under the
+    exact fd/process exhaustion this service is built to run into under
+    concurrent load &mdash; and an unhandled <code>'error'</code> event
+    throws synchronously, taking down every other in-flight run along
+    with it. Confirmed by reproducing the same listener shape against a
+    nonexistent binary.
+  </p>
+
+  <h3>Two of the path-traversal regression tests above didn't test
+    anything</h3>
+  <p>
+    Both used a payload run through <code>encodeURIComponent</code>,
+    which percent-encodes <code>/</code> &mdash; since <code>req.url</code>
+    is never decoded before route matching, the payload always landed as
+    one harmless, nonexistent-file segment whether or not the format
+    check existed. Confirmed by disabling the guard and rerunning the
+    identical test: still green. Rewritten to prove what the guard
+    actually protects instead &mdash; a wrong-shaped id pointing at a
+    real file that exists in the store.
+  </p>
+
   <div class="page-nav">
     <a class="prev" href="benchmarks"><span class="dir">Previous</span>&larr; Benchmarks</a>
     <a class="next" href="testing"><span class="dir">Next</span>Testing &rarr;</a>

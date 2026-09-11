@@ -71,7 +71,7 @@
   </p>
   <p>
     The filter is a strict allowlist &mdash; default <code>ERRNO(EPERM)</code>,
-    142 syscalls explicitly permitted &mdash; not a blocklist of known-bad
+    146 syscalls explicitly permitted &mdash; not a blocklist of known-bad
     calls. It's compiled from <code>seccomp/policy.c</code> via libseccomp on
     first use and cached as raw BPF, then handed to bubblewrap through
     <code>--seccomp FD</code>.

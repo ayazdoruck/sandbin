@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://sandbin.vercel.app/</loc></url>
+  <url><loc>https://sandbin.vercel.app/architecture</loc></url>
+  <url><loc>https://sandbin.vercel.app/security</loc></url>
+  <url><loc>https://sandbin.vercel.app/api</loc></url>
+  <url><loc>https://sandbin.vercel.app/cli</loc></url>
+  <url><loc>https://sandbin.vercel.app/languages</loc></url>
+  <url><loc>https://sandbin.vercel.app/benchmarks</loc></url>
+  <url><loc>https://sandbin.vercel.app/testing</loc></url>
+</urlset>

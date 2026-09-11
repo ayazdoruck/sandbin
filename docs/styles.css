@@ -62,12 +62,6 @@ a:hover {
   letter-spacing: -0.01em;
 }
 
-.brand-group {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
 .ph-badge {
   display: flex;
   line-height: 0;
@@ -75,7 +69,7 @@ a:hover {
 
 .ph-badge img {
   display: block;
-  border-radius: 5px;
+  border-radius: 0;
 }
 
 .topbar nav {
@@ -708,6 +702,7 @@ footer {
   color: var(--muted);
   font-size: 12px;
   display: flex;
+  align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;

@@ -446,6 +446,15 @@ button .hint {
   margin-bottom: 8px;
 }
 
+.ph-badge {
+  margin-top: 18px;
+}
+
+.ph-badge img {
+  display: block;
+  border-radius: 6px;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
